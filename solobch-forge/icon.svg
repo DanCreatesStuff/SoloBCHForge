@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="SoloBCH Forge">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#12D89A"/>
+      <stop offset="0.55" stop-color="#0AC18E"/>
+      <stop offset="1" stop-color="#068A63"/>
+    </linearGradient>
+    <linearGradient id="spark" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFD97A"/>
+      <stop offset="1" stop-color="#FF7A18"/>
+    </linearGradient>
+    <radialGradient id="sheen" cx="0.3" cy="0.22" r="0.9">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.28"/>
+      <stop offset="0.5" stop-color="#ffffff" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <!-- tile -->
+  <rect x="0" y="0" width="512" height="512" rx="112" fill="url(#bg)"/>
+  <rect x="0" y="0" width="512" height="512" rx="112" fill="url(#sheen)"/>
+
+  <!-- anvil watermark (forge) -->
+  <g fill="#ffffff" opacity="0.15">
+    <path d="M330,312 L392,330 L330,348 Z"/>
+    <rect x="150" y="304" width="200" height="46" rx="12"/>
+    <rect x="230" y="350" width="52" height="34"/>
+    <path d="M178,384 H334 L358,416 Q362,422 354,422 H158 Q150,422 154,416 Z"/>
+  </g>
+
+  <!-- Bitcoin Cash double-bar B -->
+  <g transform="translate(250,238) rotate(-12) scale(0.86) translate(-100,-140)">
+    <!-- vertical BCH bars (protrude top & bottom) -->
+    <rect x="58" y="-12" width="14" height="316" rx="7" fill="#ffffff"/>
+    <rect x="100" y="-12" width="14" height="316" rx="7" fill="#ffffff"/>
+    <!-- letter body with counters punched (evenodd) -->
+    <path fill="#ffffff" fill-rule="evenodd" d="
+      M45,15 H90 A65,65 0 0 1 90,145 A65,65 0 0 1 90,275 H45 Z
+      M90,50 A31,31 0 0 1 90,112 Z
+      M90,160 A33,33 0 0 1 90,258 Z
+    "/>
+  </g>
+
+  <!-- forge sparks -->
+  <g fill="url(#spark)">
+    <path d="M338,150 Q343,145 358,140 Q343,135 338,120 Q333,135 318,140 Q333,145 338,150 Z"/>
+    <path d="M378,116 Q381,113 390,110 Q381,107 378,98 Q375,107 366,110 Q375,113 378,116 Z" opacity="0.9"/>
+  </g>
+</svg>

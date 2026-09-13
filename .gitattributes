@@ -1,0 +1,6 @@
+# Normalize all text to LF — this repo runs on Linux (Umbrel / Docker / Pi).
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.ico binary

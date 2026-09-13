@@ -1,0 +1,40 @@
+manifestVersion: 1
+id: solobch-forge
+category: bitcoin
+name: SoloBCH Forge
+version: "1.0.0"
+tagline: Solo mine Bitcoin Cash to your own BCHN node
+description: >-
+  SoloBCH Forge is a lightweight, self-hosted Bitcoin Cash (BCH) solo-mining
+  Stratum server for Umbrel. Point your ASIC miners (NerdQaxe++/AxeOS, Bitaxe,
+  or any Stratum V1 miner) at it and mine BCH directly to your own Bitcoin Cash
+  Node — no pool, no fees, no middleman. If your hardware finds a block, the
+  full reward goes straight to your address.
+
+
+  Uses the address-as-username model: set your miner's Stratum username to your
+  BCH address (e.g. bitcoincash:qxxx.worker) and that address is paid in the
+  coinbase. A built-in dashboard shows node sync status, connected miners,
+  hashrate, shares, and any blocks found.
+
+
+  Requires the Bitcoin Cash Node app to be installed and (for real mining) fully
+  synced. Configure the node's RPC details in the app before mining.
+developer: SoloBCH Forge
+website: https://github.com/DanCreatesStuff/SoloBCHForge
+dependencies:
+  - bitcoin-cash-node
+repo: https://github.com/DanCreatesStuff/SoloBCHForge
+support: https://github.com/DanCreatesStuff/SoloBCHForge/issues
+port: 3335
+gallery:
+  - 1.jpg
+  - 2.jpg
+  - 3.jpg
+path: ""
+defaultPassword: ""
+releaseNotes: >-
+  First release: Stratum V1 server for BCH solo mining, per-miner CashAddr
+  payouts, live status dashboard, and submitblock to your BCHN node.
+submitter: DanCreatesStuff
+submission: https://github.com/DanCreatesStuff/SoloBCHForge

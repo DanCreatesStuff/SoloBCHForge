@@ -1,0 +1,7 @@
+# Never ship secrets or cruft into the image
+.env
+.env.*
+**/__pycache__/
+**/*.pyc
+.git/
+README.md

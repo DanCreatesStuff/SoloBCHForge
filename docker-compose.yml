@@ -1,0 +1,29 @@
+# SoloBCH Forge - dev/standalone compose for Umbrel.
+# Connects to the existing Bitcoin Cash Node app over Umbrel's shared network.
+# The RPC password comes from ./.env (BCHN_RPC_PASSWORD=...), never from the image.
+
+services:
+  stratum:
+    build: .
+    image: solobch-forge:dev
+    container_name: solobch-forge
+    restart: unless-stopped
+    environment:
+      - BCHN_RPC_HOST=bitcoind          # in-network hostname of the BCHN app
+      - BCHN_RPC_PORT=8332
+      - BCHN_RPC_USER=umbrel
+      - BCHN_RPC_PASSWORD=${BCHN_RPC_PASSWORD:?set BCHN_RPC_PASSWORD in ~/bch-stratum/.env}
+      - APP_DATA_DIR=/data              # config.json persistence (mirrors the Umbrel app)
+      - PYTHONUNBUFFERED=1
+    ports:
+      - "3334:3334"                     # Stratum (miners, LAN)
+      - "3335:3335"                     # status dashboard/JSON (LAN, read-only)
+    volumes:
+      - ./server:/app/server:ro         # dev: edit + `compose restart` picks it up, no rebuild
+      - ./data:/data                    # persistent config.json
+    networks:
+      - umbrel_main_network
+
+networks:
+  umbrel_main_network:
+    external: true

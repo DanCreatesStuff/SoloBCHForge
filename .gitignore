@@ -1,0 +1,21 @@
+# Secrets — never commit real RPC credentials
+.env
+*.env
+!.env.example
+
+# Runtime / app data
+data/
+config.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
