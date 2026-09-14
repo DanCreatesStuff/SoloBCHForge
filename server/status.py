@@ -84,10 +84,10 @@ body{margin:0;background:#0d1117;color:#e6edf3;font:14px/1.5 system-ui,sans-seri
 header{padding:16px 20px;background:#161b22;border-bottom:1px solid #30363d;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:30;box-shadow:0 2px 8px rgba(0,0,0,.3)}
 h1{margin:0;font-size:18px}h1 span{color:#3fb950}
 a.btn{color:#58a6ff;text-decoration:none;font-size:13px;border:1px solid #30363d;padding:6px 10px;border-radius:6px;flex:none}
-.editbar{margin-bottom:16px}
-.editbtn{background:#21262d;border:1px solid #30363d;color:#e6edf3;font-size:12px;padding:5px 12px;border-radius:6px;cursor:pointer}
+.editbar{display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:16px}
+.editbtn{flex:none;background:#21262d;border:1px solid #30363d;color:#e6edf3;font-size:12px;padding:5px 12px;border-radius:6px;cursor:pointer}
 .editbtn.active{background:#238636;border-color:#238636;color:#fff}
-.removed{margin-top:10px;display:flex;flex-direction:column;align-items:flex-start;gap:6px}
+.removed{display:flex;flex-wrap:wrap;align-items:center;gap:6px}
 .rlabel{color:#8b949e;font-size:11px}
 .chip{background:#21262d;border:1px dashed #444c56;color:#adbac7;font-size:12px;padding:4px 10px;border-radius:12px;cursor:pointer;white-space:nowrap}
 .chip:hover{color:#e6edf3;border-color:#58a6ff}
@@ -270,7 +270,9 @@ header{padding:16px 20px;background:#161b22;border-bottom:1px solid #30363d;disp
 h1{margin:0;font-size:18px}h1 span{color:#3fb950}
 a.btn{color:#58a6ff;text-decoration:none;font-size:13px;border:1px solid #30363d;padding:6px 10px;border-radius:6px}
 .wrap{padding:20px;max-width:900px;margin:0 auto}
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:16px;align-items:start}
+.grid{display:flex;flex-direction:column;gap:16px}
+.col{display:flex;flex-direction:column;gap:16px}
+@media (min-width:700px){.grid{flex-direction:row;align-items:flex-start}.col{flex:1;min-width:0}}
 .sec{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:2px 16px 16px}
 label{display:block;margin:14px 0 4px;color:#8b949e;font-size:13px}
 input{width:100%;box-sizing:border-box;background:#0d1117;border:1px solid #30363d;color:#e6edf3;padding:9px 10px;border-radius:6px;font:14px system-ui}
@@ -288,6 +290,7 @@ h2{font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:#8b949e;ma
 <header><h1>SoloBCH <span>Forge</span> · Settings</h1><a class="btn" href="/">&#8592; Dashboard</a></header>
 <div class="wrap">
 <div class="grid">
+<div class="col">
 <div class="sec">
 <h2>Node RPC</h2>
 <label>BCHN RPC host</label><input id="bchn_rpc_host">
@@ -298,6 +301,18 @@ h2{font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:#8b949e;ma
 <div class="inline"><button id="testrpc" class="alt">Test connection</button><span id="rpcmsg" class="note"></span></div>
 </div>
 
+<div class="sec">
+<h2>Notifications</h2>
+<label>Block-found webhook URL <span class="note">(blank = disabled)</span></label><input id="webhook_url" placeholder="https://…">
+<div class="note">A JSON POST is sent here the moment a block is found (Discord webhook, custom endpoint, etc).</div>
+<label>Also alert on a new best share</label>
+<select id="notify_best_share"><option value="true">On — POST when a new all-time best share is set</option><option value="false">Off — only alert on blocks</option></select>
+<div class="note">Uses the same webhook URL. New personal-best shares are rare, so this stays quiet.</div>
+<div class="inline"><button id="testhook" class="alt">Send test webhook</button><span id="hookmsg" class="note"></span></div>
+</div>
+</div>
+
+<div class="col">
 <div class="sec">
 <h2>Difficulty</h2>
 <label>Share difficulty <span class="note">(fixed value, and the vardiff starting point)</span></label><input id="share_difficulty">
@@ -310,16 +325,6 @@ h2{font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:#8b949e;ma
 </div>
 
 <div class="sec">
-<h2>Notifications</h2>
-<label>Block-found webhook URL <span class="note">(blank = disabled)</span></label><input id="webhook_url" placeholder="https://…">
-<div class="note">A JSON POST is sent here the moment a block is found (Discord webhook, custom endpoint, etc).</div>
-<label>Also alert on a new best share</label>
-<select id="notify_best_share"><option value="true">On — POST when a new all-time best share is set</option><option value="false">Off — only alert on blocks</option></select>
-<div class="note">Uses the same webhook URL. New personal-best shares are rare, so this stays quiet.</div>
-<div class="inline"><button id="testhook" class="alt">Send test webhook</button><span id="hookmsg" class="note"></span></div>
-</div>
-
-<div class="sec">
 <h2>Network</h2>
 <div class="row"><div><label>Stratum port <span class="note">(restart)</span></label><input id="stratum_port"></div>
 <div><label>Status port <span class="note">(restart)</span></label><input id="status_port"></div></div>
@@ -329,6 +334,7 @@ h2{font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:#8b949e;ma
 <h2>Reset stats</h2>
 <div class="note">Clears all-time best difficulty, lifetime accepted/rejected shares, total hashes and mining time. Found blocks are kept. This cannot be undone.</div>
 <div class="inline"><button id="resetstats" class="alt" style="color:#f85149;border-color:#f85149">Reset lifetime stats</button><span id="resetmsg" class="note"></span></div>
+</div>
 </div>
 </div>
 
