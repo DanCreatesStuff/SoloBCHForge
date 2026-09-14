@@ -60,5 +60,5 @@ jobs:
 
       - name: Show digest to pin in docker-compose.yml
         run: |
-          echo "Pin this in umbrel-store/solobch-forge/docker-compose.yml:"
+          echo "Pin this in solobch-forge/docker-compose.yml:"
           echo "  image: ${{ env.IMAGE }}@${{ steps.build.outputs.digest }}"

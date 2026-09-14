@@ -104,8 +104,10 @@ each `v*.*.*` tag.
 ## Disclaimer
 
 Provided **as is**, without warranty of any kind. You are responsible for your node,
-your miner, and your funds. This project is not affiliated with Umbrel, Bitcoin Cash
-Node, or any miner manufacturer.
+your miner, and your funds. You are solely responsible for complying with the laws,
+regulations, and tax obligations that apply to cryptocurrency mining in your
+jurisdiction. Solo mining is a lottery with no guaranteed reward. This project is not
+affiliated with Umbrel, Bitcoin Cash Node, or any miner manufacturer.
 
 ## License
 

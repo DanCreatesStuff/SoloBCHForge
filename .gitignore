@@ -19,3 +19,6 @@ venv/
 Thumbs.db
 .vscode/
 .idea/
+
+# Local source screenshots (gallery JPGs live in solobch-forge/)
+/Screenshots/
