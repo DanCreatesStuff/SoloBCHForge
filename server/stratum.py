@@ -71,6 +71,30 @@ class StratumServer:
             self.clients.discard(conn)
             self.jobs.unregister(conn)
 
+    def evict_stale_duplicates(self, keep):
+        """Drop the ghost left behind when a miner reconnects.
+
+        On an internet blip the miner's old socket dies silently — the server
+        stays blocked reading it until the OS TCP timeout (minutes), so the dead
+        connection lingers in ``clients`` and shows up as a duplicate row (0 H/s,
+        stale "last share"). When the same miner reconnects and re-authorizes,
+        we treat any other authorized connection presenting the *same* identity
+        (``address.worker``) as that ghost and remove it immediately, so only the
+        fresh connection remains on the dashboard.
+        """
+        for c in list(self.clients):
+            if c is keep or not c.authorized:
+                continue
+            if c.raw_user and c.raw_user == keep.raw_user:
+                log.info("%s superseded by reconnect — dropping stale duplicate",
+                         c._tag())
+                self.clients.discard(c)
+                self.jobs.unregister(c)
+                try:
+                    c.writer.close()
+                except Exception:
+                    pass
+
 
 class ClientConn:
     def __init__(self, server: StratumServer, reader, writer):
@@ -301,6 +325,10 @@ class ClientConn:
         self.authorized = True
         await self.send_result(mid, True)
         log.info("%s authorized — payout %s", self._tag(), self.payout_address)
+        # A reconnect (e.g. after an internet drop) leaves the old, now-dead
+        # connection lingering until its socket times out. Now that this fresh
+        # one is authorized, evict that stale twin so it can't duplicate the row.
+        self.server.evict_stale_duplicates(self)
         self.jobs.register(self)
         await self.set_difficulty(self.jobs.share_difficulty)
         await self.send_current_job()
