@@ -3,8 +3,9 @@
 *.env
 !.env.example
 
-# Runtime / app data
-data/
+# Runtime / app data (dev/standalone writes ./data at the repo root only —
+# do NOT ignore the app's shipped solobch-forge/data/ template dir)
+/data/
 config.json
 
 # Python

@@ -2,7 +2,7 @@ manifestVersion: 1
 id: solobch-forge
 category: bitcoin
 name: SoloBCH Forge
-version: "1.0.1"
+version: "1.0.2"
 tagline: Solo mine Bitcoin Cash to your own BCHN node
 icon: https://cdn.jsdelivr.net/gh/DanCreatesStuff/SoloBCHForge@main/solobch-forge/icon.svg
 description: >-
@@ -37,6 +37,7 @@ defaultPassword: ""
 releaseNotes: >-
   Auto-connects to the Bitcoin Cash Node app using Umbrel's built-in node
   credentials — no manual RPC setup needed. Fixes the node showing as
-  unreachable (mock mode) on a fresh install.
+  unreachable (mock mode) and fixes a permission error when saving settings on
+  a fresh install.
 submitter: DanCreatesStuff
 submission: https://github.com/DanCreatesStuff/SoloBCHForge

@@ -1,0 +1,1 @@
+# Ships an empty, UID-1000-owned data dir so Umbrel can persist config.json/stats.json.
