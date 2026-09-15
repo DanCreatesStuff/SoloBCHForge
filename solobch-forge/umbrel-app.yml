@@ -2,7 +2,7 @@ manifestVersion: 1
 id: solobch-forge
 category: bitcoin
 name: SoloBCH Forge
-version: "1.0.0"
+version: "1.0.1"
 tagline: Solo mine Bitcoin Cash to your own BCHN node
 icon: https://cdn.jsdelivr.net/gh/DanCreatesStuff/SoloBCHForge@main/solobch-forge/icon.svg
 description: >-
@@ -20,7 +20,7 @@ description: >-
 
 
   Requires the Bitcoin Cash Node app to be installed and (for real mining) fully
-  synced. Configure the node's RPC details in the app before mining.
+  synced. It connects to the node automatically — no RPC setup needed.
 developer: SoloBCH Forge
 website: https://github.com/DanCreatesStuff/SoloBCHForge
 dependencies:
@@ -35,7 +35,8 @@ gallery:
 path: ""
 defaultPassword: ""
 releaseNotes: >-
-  First release: Stratum V1 server for BCH solo mining, per-miner CashAddr
-  payouts, live status dashboard, and submitblock to your BCHN node.
+  Auto-connects to the Bitcoin Cash Node app using Umbrel's built-in node
+  credentials — no manual RPC setup needed. Fixes the node showing as
+  unreachable (mock mode) on a fresh install.
 submitter: DanCreatesStuff
 submission: https://github.com/DanCreatesStuff/SoloBCHForge
