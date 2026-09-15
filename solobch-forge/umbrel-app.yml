@@ -4,6 +4,7 @@ category: bitcoin
 name: SoloBCH Forge
 version: "1.0.0"
 tagline: Solo mine Bitcoin Cash to your own BCHN node
+icon: https://cdn.jsdelivr.net/gh/DanCreatesStuff/SoloBCHForge@main/solobch-forge/icon.svg
 description: >-
   SoloBCH Forge is a lightweight, self-hosted Bitcoin Cash (BCH) solo-mining
   Stratum server for Umbrel. Point your ASIC miners (NerdQaxe++/AxeOS, Bitaxe,
@@ -28,9 +29,9 @@ repo: https://github.com/DanCreatesStuff/SoloBCHForge
 support: https://github.com/DanCreatesStuff/SoloBCHForge/issues
 port: 3335
 gallery:
-  - 1.jpg
-  - 2.jpg
-  - 3.jpg
+  - https://cdn.jsdelivr.net/gh/DanCreatesStuff/SoloBCHForge@main/solobch-forge/1.jpg
+  - https://cdn.jsdelivr.net/gh/DanCreatesStuff/SoloBCHForge@main/solobch-forge/2.jpg
+  - https://cdn.jsdelivr.net/gh/DanCreatesStuff/SoloBCHForge@main/solobch-forge/3.jpg
 path: ""
 defaultPassword: ""
 releaseNotes: >-
