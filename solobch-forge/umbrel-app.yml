@@ -2,7 +2,7 @@ manifestVersion: 1
 id: solobch-forge
 category: bitcoin
 name: SoloBCH Forge
-version: "1.0.3"
+version: "1.0.4"
 tagline: Solo mine Bitcoin Cash to your own BCHN node
 icon: https://cdn.jsdelivr.net/gh/DanCreatesStuff/SoloBCHForge@main/solobch-forge/icon.svg
 description: >-
@@ -35,8 +35,9 @@ gallery:
 path: ""
 defaultPassword: ""
 releaseNotes: >-
-  Fixes duplicate miners appearing in the dashboard after an internet drop.
-  When a miner reconnects, its stale connection is now dropped so each miner
-  shows a single row instead of a lingering ghost entry.
+  Mobile-first dashboard redesign — the page now fits phone and tablet screens
+  with no left/right scrolling. Miner and block tables stack into readable,
+  labelled cards on small screens and stay full tables on desktop. Also fixes
+  duplicate miners appearing after an internet drop.
 submitter: DanCreatesStuff
 submission: https://github.com/DanCreatesStuff/SoloBCHForge

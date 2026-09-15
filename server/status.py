@@ -91,7 +91,8 @@ a.btn{color:#58a6ff;text-decoration:none;font-size:13px;border:1px solid #30363d
 .rlabel{color:#8b949e;font-size:11px}
 .chip{background:#21262d;border:1px dashed #444c56;color:#adbac7;font-size:12px;padding:4px 10px;border-radius:12px;cursor:pointer;white-space:nowrap}
 .chip:hover{color:#e6edf3;border-color:#58a6ff}
-.wrap{padding:20px;max-width:1000px;margin:0 auto}
+.wrap{padding:16px;max-width:1000px;margin:0 auto}
+@media (min-width:640px){.wrap{padding:20px}}
 .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:20px}
 .card{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:12px 14px;position:relative}
 .card .k{color:#8b949e;font-size:12px;text-transform:uppercase;letter-spacing:.04em}
@@ -107,10 +108,26 @@ a.btn{color:#58a6ff;text-decoration:none;font-size:13px;border:1px solid #30363d
 .stat.hl .v{color:#3fb950}
 .groups{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:16px}
 .group{display:grid;grid-template-columns:1fr 1fr;gap:12px;flex:1 1 300px}
-table{width:100%;border-collapse:collapse;background:#161b22;border:1px solid #30363d;border-radius:8px;overflow:hidden}
-th,td{text-align:left;padding:8px 10px;border-bottom:1px solid #21262d;font-variant-numeric:tabular-nums}
-th{color:#8b949e;font-size:12px;text-transform:uppercase;letter-spacing:.04em}
-tr:last-child td{border-bottom:none}
+/* Tables are mobile-first: each row is a stacked card on phones (label on the
+   left via data-label, value on the right — no left/right scrolling), and only
+   become a real multi-column table at >=640px. */
+table{width:100%;border-collapse:collapse;background:transparent}
+thead{display:none}
+tr{display:block;background:#161b22;border:1px solid #30363d;border-radius:8px;margin-bottom:10px;overflow:hidden}
+td{display:flex;justify-content:space-between;align-items:baseline;gap:16px;padding:7px 12px;border-bottom:1px solid #21262d;font-variant-numeric:tabular-nums;text-align:right;word-break:break-word}
+td::before{content:attr(data-label);color:#8b949e;font-size:11px;text-transform:uppercase;letter-spacing:.04em;font-weight:600;text-align:left;flex:none}
+tr td:last-child{border-bottom:none}
+td.empty{display:block;text-align:center;padding:20px}
+td.empty::before{content:none}
+@media (min-width:640px){
+ table{border:1px solid #30363d;border-radius:8px;overflow:hidden}
+ thead{display:table-header-group}
+ tr{display:table-row;background:none;border:0;border-radius:0;margin:0}
+ th,td{display:table-cell;text-align:left;padding:8px 10px;border-bottom:1px solid #21262d;font-variant-numeric:tabular-nums;word-break:normal;gap:0}
+ th{color:#8b949e;font-size:12px;text-transform:uppercase;letter-spacing:.04em}
+ td::before{content:none}
+ tr:last-child td{border-bottom:none}
+}
 .ok{color:#3fb950}.warn{color:#d29922}.bad{color:#f85149}
 .dim{color:#8b949e}.empty{padding:20px;text-align:center;color:#8b949e}
 .panel{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:12px 14px;margin-bottom:16px}
@@ -230,14 +247,19 @@ async function tick(){
   document.getElementById('cards').innerHTML=c;
   const mb=document.getElementById('miners');
   if(!s.miners.length){mb.innerHTML='<tr><td colspan="11" class="empty">No miners connected</td></tr>';}
-  else{mb.innerHTML=s.miners.map(m=>'<tr><td>'+(m.worker||'—')+(m.authorized?'':' <span class="dim">(connecting)</span>')+
-   '</td><td>'+m.ip+'</td><td class="dim">'+(m.model||'—')+'</td><td class="dim">'+copyAddr(m.payout)+
-   '</td><td class="ok">'+m.hashrate+
-   '</td><td class="dim">'+(m.difficulty!=null?humanNum(m.difficulty):'—')+
-   '</td><td class="dim">'+humanNum(m.best_diff)+
-   '</td><td'+(m.blocks?' class="ok"':'')+'>'+(m.blocks||0)+
-   '</td><td>'+m.accepted+'</td><td'+(m.rejected?' class="warn"':'')+'>'+m.rejected+
-   '</td><td>'+ago(m.last_share_ago)+'</td></tr>').join('');}
+  else{mb.innerHTML=s.miners.map(m=>'<tr>'+
+   '<td data-label="Miner">'+(m.worker||'—')+(m.authorized?'':' <span class="dim">(connecting)</span>')+'</td>'+
+   '<td data-label="IP">'+m.ip+'</td>'+
+   '<td data-label="Model" class="dim">'+(m.model||'—')+'</td>'+
+   '<td data-label="Payout" class="dim">'+copyAddr(m.payout)+'</td>'+
+   '<td data-label="Hashrate" class="ok">'+m.hashrate+'</td>'+
+   '<td data-label="Diff" class="dim">'+(m.difficulty!=null?humanNum(m.difficulty):'—')+'</td>'+
+   '<td data-label="Best diff" class="dim">'+humanNum(m.best_diff)+'</td>'+
+   '<td data-label="Blocks"'+(m.blocks?' class="ok"':'')+'>'+(m.blocks||0)+'</td>'+
+   '<td data-label="Accepted">'+m.accepted+'</td>'+
+   '<td data-label="Rejected"'+(m.rejected?' class="warn"':'')+'>'+m.rejected+'</td>'+
+   '<td data-label="Last share">'+ago(m.last_share_ago)+'</td>'+
+   '</tr>').join('');}
   const bl=n.recent_blocks||[];
   document.getElementById('blocks').innerHTML = bl.length ?
    ('<h3 style="margin:24px 0 8px">Blocks</h3><table><thead><tr><th>Miner</th><th>Height</th><th>Hash</th>'
@@ -247,9 +269,15 @@ async function tick(){
       const conf=(acc&&n.blocks!=null&&b.height!=null)?Math.max(0,n.blocks-b.height+1):null;
       const hash=b.hash||'';
       const hcell=hash?'<a class="lnk" href="https://blockchair.com/bitcoin-cash/block/'+encodeURIComponent(hash)+'" target="_blank" rel="noopener">'+hash.slice(0,20)+'…</a>':'—';
-      return '<tr><td>'+(b.worker||'—')+'</td><td>'+b.height+'</td><td class="dim">'+hcell+'</td><td class="'
-      +(acc?'ok':'bad')+'">'+b.status+'</td><td class="dim">'+(conf!=null?conf:'—')+'</td><td class="dim">'
-      +copyAddr(b.payout)+'</td><td class="dim">'+ago((Date.now()/1000)-b.time)+' ago</td></tr>';}).join('')
+      return '<tr>'+
+       '<td data-label="Miner">'+(b.worker||'—')+'</td>'+
+       '<td data-label="Height">'+b.height+'</td>'+
+       '<td data-label="Hash" class="dim">'+hcell+'</td>'+
+       '<td data-label="Status" class="'+(acc?'ok':'bad')+'">'+b.status+'</td>'+
+       '<td data-label="Conf" class="dim">'+(conf!=null?conf:'—')+'</td>'+
+       '<td data-label="Payout" class="dim">'+copyAddr(b.payout)+'</td>'+
+       '<td data-label="When" class="dim">'+ago((Date.now()/1000)-b.time)+' ago</td>'+
+       '</tr>';}).join('')
     +'</tbody></table>') : '';
   let foot='Updated '+new Date().toLocaleTimeString();
   if(p.mining_since){foot='Mining since '+new Date(p.mining_since*1000).toLocaleDateString()+' · '+foot;}
