@@ -312,6 +312,19 @@ h2{font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:#8b949e;ma
 .sec>h2:first-child{margin-top:14px}
 .inline{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:12px}
 .note{color:#8b949e;font-size:12px;margin-top:4px}
+.toggles{margin-top:12px}
+.toggle{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:11px 0;border-bottom:1px solid #21262d}
+.toggle:last-child{border-bottom:none}
+.toggle .tlabel{color:#e6edf3;font-size:14px}
+.toggle .txt{min-width:0}
+.toggle .note{margin-top:2px}
+.switch{position:relative;display:inline-block;width:42px;height:24px;flex:none}
+.switch input{opacity:0;width:0;height:0}
+.slider{position:absolute;cursor:pointer;inset:0;background:#30363d;border-radius:24px;transition:.2s}
+.slider:before{content:"";position:absolute;height:18px;width:18px;left:3px;top:3px;background:#e6edf3;border-radius:50%;transition:.2s}
+.switch input:checked+.slider{background:#238636}
+.switch input:checked+.slider:before{transform:translateX(18px)}
+.switch input:focus-visible+.slider{outline:2px solid #58a6ff;outline-offset:2px}
 #save{width:100%;margin-top:16px}
 #msg{margin-top:14px}
 </style></head><body>
@@ -331,11 +344,13 @@ h2{font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:#8b949e;ma
 
 <div class="sec">
 <h2>Notifications</h2>
-<label>Block-found webhook URL <span class="note">(blank = disabled)</span></label><input id="webhook_url" placeholder="https://…">
-<div class="note">A JSON POST is sent here the moment a block is found (Discord webhook, custom endpoint, etc).</div>
-<label>Also alert on a new best share</label>
-<select id="notify_best_share"><option value="true">On — POST when a new all-time best share is set</option><option value="false">Off — only alert on blocks</option></select>
-<div class="note">Uses the same webhook URL. New personal-best shares are rare, so this stays quiet.</div>
+<label>Webhook URL <span class="note">(blank = disabled)</span></label><input id="webhook_url" placeholder="https://…">
+<div class="note">A JSON POST is sent to this URL for each alert you switch on below (Discord webhook or any custom endpoint).</div>
+<div class="toggles">
+<div class="toggle"><div class="txt"><div class="tlabel">Block found</div><div class="note">The moment your hardware finds a BCH block.</div></div><label class="switch"><input type="checkbox" id="notify_block"><span class="slider"></span></label></div>
+<div class="toggle"><div class="txt"><div class="tlabel">New best share</div><div class="note">When a new all-time best share difficulty is set (rare).</div></div><label class="switch"><input type="checkbox" id="notify_best_share"><span class="slider"></span></label></div>
+<div class="toggle"><div class="txt"><div class="tlabel">Miner offline</div><div class="note">When a connected miner stops sharing for over 2 minutes.</div></div><label class="switch"><input type="checkbox" id="notify_miner_offline"><span class="slider"></span></label></div>
+</div>
 <div class="inline"><button id="testhook" class="alt">Send test webhook</button><span id="hookmsg" class="note"></span></div>
 </div>
 </div>
@@ -370,14 +385,17 @@ h2{font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:#8b949e;ma
 <div id="msg"></div>
 </div>
 <script>
-const FIELDS=['bchn_rpc_host','bchn_rpc_port','bchn_rpc_user','stratum_port','status_port','share_difficulty','vardiff_enabled','vardiff_target_spm','vardiff_min','vardiff_max','webhook_url','notify_best_share'];
-const BOOL_FIELDS=['vardiff_enabled','notify_best_share'];
+const FIELDS=['bchn_rpc_host','bchn_rpc_port','bchn_rpc_user','stratum_port','status_port','share_difficulty','vardiff_enabled','vardiff_target_spm','vardiff_min','vardiff_max','webhook_url'];
+const BOOL_FIELDS=['vardiff_enabled'];
+const CHECK_FIELDS=['notify_block','notify_best_share','notify_miner_offline'];
 async function load(){
  const c=await (await fetch('/config.json')).json();
  FIELDS.forEach(f=>{const el=document.getElementById(f);if(!el)return;el.value=BOOL_FIELDS.includes(f)?String(!!c[f]):(c[f]==null?'':c[f]);});
+ CHECK_FIELDS.forEach(f=>{const el=document.getElementById(f);if(el)el.checked=!!c[f];});
 }
 function collect(){
  const body={};FIELDS.forEach(f=>{body[f]=document.getElementById(f).value;});
+ CHECK_FIELDS.forEach(f=>{body[f]=document.getElementById(f).checked;});
  const pw=document.getElementById('bchn_rpc_password').value;
  if(pw)body.bchn_rpc_password=pw;
  return body;

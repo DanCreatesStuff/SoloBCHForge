@@ -26,8 +26,10 @@ DEFAULTS = {
     "vardiff_target_spm": 20,          # target accepted shares per minute per worker
     "vardiff_min": 128,                # vardiff difficulty floor
     "vardiff_max": 4000000,            # vardiff difficulty ceiling
-    "webhook_url": "",                 # POST JSON here on a block find (blank = off)
-    "notify_best_share": True,         # also POST when a new all-time best share is set
+    "webhook_url": "",                 # POST JSON here for enabled alerts (blank = off)
+    "notify_block": True,              # POST when a block is found
+    "notify_best_share": True,         # POST when a new all-time best share is set
+    "notify_miner_offline": True,      # POST when a connected miner drops offline
     "hidden_cards": [],                # dashboard card ids the user has hidden (UI pref)
 }
 
@@ -44,11 +46,14 @@ _ENV = {
     "vardiff_min": "SOLOBCH_VARDIFF_MIN",
     "vardiff_max": "SOLOBCH_VARDIFF_MAX",
     "webhook_url": "SOLOBCH_WEBHOOK_URL",
+    "notify_block": "SOLOBCH_NOTIFY_BLOCK",
     "notify_best_share": "SOLOBCH_NOTIFY_BEST_SHARE",
+    "notify_miner_offline": "SOLOBCH_NOTIFY_MINER_OFFLINE",
 }
 _INT_KEYS = {"bchn_rpc_port", "stratum_port", "status_port", "share_difficulty",
              "vardiff_target_spm", "vardiff_min", "vardiff_max"}
-_BOOL_KEYS = {"vardiff_enabled", "notify_best_share"}
+_BOOL_KEYS = {"vardiff_enabled", "notify_block", "notify_best_share",
+              "notify_miner_offline"}
 
 
 def config_path():

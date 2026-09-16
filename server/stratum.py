@@ -43,6 +43,9 @@ VARDIFF_INTERVAL = 45.0             # min seconds between retargets per worker
 VARDIFF_WINDOW = 120.0              # look back this many seconds at share rate
 VARDIFF_MIN_WINDOW = 30.0           # need at least this much data before adjusting
 VARDIFF_TICK = 15.0                 # how often the vardiff loop scans workers
+OFFLINE_TICK = 15.0                # how often the offline-miner monitor scans
+OFFLINE_GRACE = 120.0              # a miner must be gone this long before we alert
+                                    # (rides out brief internet blips / reconnects)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -58,6 +61,10 @@ class StratumServer:
         self.clients = set()
         self.stratum_port = BIND_PORT
         self.start_time_wall = time.time()
+        # Identity (address.worker) -> {worker, payout, last_seen, alerted}. Tracks
+        # miners that have connected so the offline monitor can alert when one that
+        # was mining drops off and stays gone. RAM-only; not persisted.
+        self.seen_miners = {}
 
     async def handle(self, reader, writer):
         if len(self.clients) >= MAX_CONNECTIONS:
@@ -70,6 +77,46 @@ class StratumServer:
         finally:
             self.clients.discard(conn)
             self.jobs.unregister(conn)
+
+    def note_miner(self, conn):
+        """Record/refresh a connected miner so the offline monitor can track it."""
+        ru = conn.raw_user
+        if not ru:
+            return
+        e = self.seen_miners.get(ru)
+        now = time.monotonic()
+        if e is None:
+            self.seen_miners[ru] = {"worker": conn.worker,
+                                    "payout": conn.payout_address,
+                                    "last_seen": now, "alerted": False}
+        else:
+            e["worker"] = conn.worker
+            e["payout"] = conn.payout_address
+            e["last_seen"] = now
+            e["alerted"] = False
+
+    def scan_offline_miners(self):
+        """Return entries for miners that have been gone longer than the grace
+        period and haven't been alerted yet (marking them alerted). A miner that
+        is currently connected refreshes its timer and clears any prior alert."""
+        now = time.monotonic()
+        connected = {c.raw_user for c in self.clients if c.authorized and c.raw_user}
+        alerts = []
+        for ru, e in self.seen_miners.items():
+            if ru in connected:
+                if e["alerted"]:
+                    e["alerted"] = False
+                    log.info("[%s] miner back online", e.get("worker") or ru)
+                e["last_seen"] = now
+                continue
+            if not e["alerted"] and (now - e["last_seen"]) >= OFFLINE_GRACE:
+                e["alerted"] = True
+                gone = now - e["last_seen"]
+                log.warning("[%s] miner offline for %.0fs — alerting",
+                            e.get("worker") or ru, gone)
+                alerts.append({"worker": e.get("worker"), "payout": e.get("payout"),
+                               "offline_seconds": gone, "time": time.time()})
+        return alerts
 
     def evict_stale_duplicates(self, keep):
         """Drop the ghost left behind when a miner reconnects.
@@ -329,6 +376,7 @@ class ClientConn:
         # connection lingering until its socket times out. Now that this fresh
         # one is authorized, evict that stale twin so it can't duplicate the row.
         self.server.evict_stale_duplicates(self)
+        self.server.note_miner(self)      # track for the offline monitor
         self.jobs.register(self)
         await self.set_difficulty(self.jobs.share_difficulty)
         await self.send_current_job()
@@ -447,7 +495,9 @@ async def main():
     stats = Stats()
     jobs = JobManager(rpc, cfg["share_difficulty"], POLL_INTERVAL,
                       vardiff=vardiff, webhook_url=cfg["webhook_url"], stats=stats,
-                      notify_best_share=cfg["notify_best_share"])
+                      notify_block=cfg["notify_block"],
+                      notify_best_share=cfg["notify_best_share"],
+                      notify_miner_offline=cfg["notify_miner_offline"])
 
     server = StratumServer(jobs)
     server.stratum_port = cfg["stratum_port"]
@@ -471,6 +521,15 @@ async def main():
                 except Exception as e:
                     log.debug("vardiff retarget error: %s", e)
 
+    async def offline_loop():
+        while True:
+            await asyncio.sleep(OFFLINE_TICK)
+            try:
+                for entry in server.scan_offline_miners():
+                    await jobs.notify_miner_offline(entry)
+            except Exception as e:
+                log.debug("offline monitor error: %s", e)
+
     # Flush lifetime stats on a clean shutdown (Umbrel sends SIGTERM with a 1m
     # grace period) so throttled counters land on disk instead of being lost.
     # The handler also trips a stop event so the container exits promptly
@@ -491,6 +550,7 @@ async def main():
 
     asyncio.create_task(jobs.run())
     asyncio.create_task(vardiff_loop())
+    asyncio.create_task(offline_loop())
     try:
         async with srv:
             serve_task = asyncio.create_task(srv.serve_forever())

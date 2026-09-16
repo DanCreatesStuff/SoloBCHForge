@@ -85,10 +85,15 @@ class MockJob:
 class JobManager:
     def __init__(self, rpc, share_difficulty, poll_interval=5.0,
                  vardiff=None, webhook_url="", stats=None,
-                 notify_best_share=True):
+                 notify_block=True, notify_best_share=True,
+                 notify_miner_offline=True):
         self.rpc = rpc
         self.stats = stats
+        # `notify_on_*` flags gate each alert type; named to avoid clashing with
+        # the notify_block()/notify_miner_offline() coroutine methods below.
+        self.notify_on_block = notify_block
         self.notify_best_share = notify_best_share
+        self.notify_on_miner_offline = notify_miner_offline
         self.share_difficulty = share_difficulty
         self.share_target = target_from_difficulty(share_difficulty)
         self.poll_interval = poll_interval
@@ -159,7 +164,7 @@ class JobManager:
     async def notify_block(self, entry):
         """Fire the configured webhook (fire-and-forget) when a block is found."""
         url = self.webhook_url
-        if not url:
+        if not url or not self.notify_on_block:
             return
         payload = {
             "event": "block_found",
@@ -199,6 +204,27 @@ class JobManager:
         except Exception as e:
             log.warning("best-share webhook failed (%s): %s", url, e)
 
+    async def notify_miner_offline(self, entry):
+        """Fire the webhook when a connected miner drops offline (opt-in)."""
+        url = self.webhook_url
+        if not url or not self.notify_on_miner_offline:
+            return
+        payload = {
+            "event": "miner_offline",
+            "worker": entry.get("worker"),
+            "payout": entry.get("payout"),
+            "offline_seconds": entry.get("offline_seconds"),
+            "time": entry.get("time"),
+            "server": "SoloBCH Forge",
+        }
+        try:
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(None, self._post_webhook, url, payload)
+            log.info("miner-offline webhook delivered to %s (worker %s)",
+                     url, entry.get("worker"))
+        except Exception as e:
+            log.warning("miner-offline webhook failed (%s): %s", url, e)
+
     @staticmethod
     def _discord_message(p):
         """Human-readable one-liner for Discord's {content} format."""
@@ -214,6 +240,11 @@ class JobManager:
             diff = p.get("diff") or 0
             return (f"⛏️ **New best share!** difficulty {diff:,.0f}\n"
                     f"worker `{worker}` → `{payout}`")
+        if event == "miner_offline":
+            secs = p.get("offline_seconds")
+            since = f" (no shares for {secs/60:.0f} min)" if secs else ""
+            return (f"🔌 **Miner offline** — `{worker}`{since}\n"
+                    f"payout `{payout}`")
         if event == "test":
             return "✅ SoloBCH Forge test webhook — notifications are working."
         return "SoloBCH Forge: " + json.dumps(p)
@@ -247,7 +278,9 @@ class JobManager:
                         "target_spm": cfg["vardiff_target_spm"],
                         "min": cfg["vardiff_min"], "max": cfg["vardiff_max"]}
         self.webhook_url = cfg["webhook_url"]
+        self.notify_on_block = cfg["notify_block"]
         self.notify_best_share = cfg["notify_best_share"]
+        self.notify_on_miner_offline = cfg["notify_miner_offline"]
         self.node_reachable = False       # force a fresh check on next poll
         log.info("config applied — node %s, share diff %s, vardiff %s",
                  self.rpc, self.share_difficulty,
