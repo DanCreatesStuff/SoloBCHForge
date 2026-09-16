@@ -2,7 +2,7 @@ manifestVersion: 1
 id: solobch-forge
 category: bitcoin
 name: SoloBCH Forge
-version: "1.0.5"
+version: "1.0.6"
 tagline: Solo mine Bitcoin Cash to your own BCHN node
 icon: https://cdn.jsdelivr.net/gh/DanCreatesStuff/SoloBCHForge@main/solobch-forge/icon.svg
 description: >-
@@ -35,9 +35,8 @@ gallery:
 path: ""
 defaultPassword: ""
 releaseNotes: >-
-  New "miner offline" webhook alert — get notified when a miner drops off and
-  stays disconnected for over 2 minutes. Notifications now have individual
-  on/off switches on the Settings page (block found, new best share, miner
-  offline), so you can enable exactly the alerts you want.
+  Adds a "Buy me a coffee" button to the dashboard header with the developer's
+  BCH, BTC and ETH donation addresses — tap any address to copy it. Tips are
+  entirely optional and hugely appreciated.
 submitter: DanCreatesStuff
 submission: https://github.com/DanCreatesStuff/SoloBCHForge

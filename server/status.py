@@ -83,7 +83,10 @@ DASHBOARD_HTML = """<!doctype html><html><head><meta charset="utf-8">
 body{margin:0;background:#0d1117;color:#e6edf3;font:14px/1.5 system-ui,sans-serif}
 header{padding:16px 20px;background:#161b22;border-bottom:1px solid #30363d;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:30;box-shadow:0 2px 8px rgba(0,0,0,.3)}
 h1{margin:0;font-size:18px}h1 span{color:#3fb950}
-a.btn{color:#58a6ff;text-decoration:none;font-size:13px;border:1px solid #30363d;padding:6px 10px;border-radius:6px;flex:none}
+.btn{color:#58a6ff;text-decoration:none;font-size:13px;border:1px solid #30363d;padding:6px 10px;border-radius:6px;flex:none;background:none;font-family:inherit;line-height:1.5;cursor:pointer}
+.hbtns{display:flex;gap:8px;align-items:center;flex:none}
+.btn.coffee{color:#e3b341;border-color:#3a2f1a;font-size:15px;padding:5px 10px}
+.btn.coffee:hover{border-color:#e3b341}
 .editbar{display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:16px}
 .editbtn{flex:none;background:#21262d;border:1px solid #30363d;color:#e6edf3;font-size:12px;padding:5px 12px;border-radius:6px;cursor:pointer}
 .editbtn.active{background:#238636;border-color:#238636;color:#fff}
@@ -137,10 +140,24 @@ td.empty::before{content:none}
 .bar>i{display:block;height:100%;background:#3fb950;border-radius:4px;transition:width .4s}
 .copy{cursor:pointer;border-bottom:1px dotted #8b949e}.copy:hover{color:#e6edf3}
 .lnk{color:#58a6ff;text-decoration:none}.lnk:hover{text-decoration:underline}
-#toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:#238636;color:#fff;padding:8px 14px;border-radius:6px;font-size:13px;box-shadow:0 2px 8px rgba(0,0,0,.4);z-index:10}
+#toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:#238636;color:#fff;padding:8px 14px;border-radius:6px;font-size:13px;box-shadow:0 2px 8px rgba(0,0,0,.4);z-index:60}
+.modal{position:fixed;inset:0;background:rgba(1,4,9,.72);z-index:50;display:flex;align-items:center;justify-content:center;padding:16px}
+.modal[hidden]{display:none}
+.dialog{background:#161b22;border:1px solid #30363d;border-radius:12px;max-width:440px;width:100%;padding:16px 18px 20px;box-shadow:0 8px 32px rgba(0,0,0,.5);max-height:90vh;overflow:auto}
+.dhead{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.dhead h3{margin:0;font-size:16px}
+.x{background:none;border:0;color:#8b949e;font-size:24px;line-height:1;cursor:pointer;padding:0 4px}
+.x:hover{color:#e6edf3}
+.ddesc{color:#8b949e;font-size:13px;margin:10px 0 4px}
+.addr{display:flex;align-items:center;gap:10px;background:#0d1117;border:1px solid #30363d;border-radius:8px;padding:10px 12px;margin-top:10px;cursor:pointer}
+.addr:hover{border-color:#58a6ff}
+.addr .chain{flex:none;width:38px;font-weight:700;font-size:13px;color:#3fb950}
+.addr .a{flex:1;min-width:0;font-size:12px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;color:#adbac7;word-break:break-all}
+.addr .ci{flex:none;color:#8b949e;font-size:16px}
 </style></head><body>
 <header><h1>SoloBCH <span>Forge</span></h1>
-<a class="btn" href="/config">&#9881; Settings</a></header>
+<div class="hbtns"><button class="btn coffee" title="Buy me a coffee" onclick="openDonate()">&#9749;</button>
+<a class="btn" href="/config">&#9881; Settings</a></div></header>
 <div class="wrap">
 <div class="editbar"><button id="editBtn" class="editbtn" onclick="toggleEdit()">Edit layout</button>
 <div id="removed" class="removed" hidden></div></div>
@@ -154,6 +171,15 @@ td.empty::before{content:none}
 <tbody id="miners"></tbody></table>
 <div id="blocks"></div>
 <p class="dim" id="foot"></p>
+</div>
+<div id="donate" class="modal" hidden onclick="if(event.target===this)closeDonate()">
+ <div class="dialog">
+  <div class="dhead"><h3>&#9749; Buy me a coffee</h3><button class="x" title="Close" onclick="closeDonate()">&times;</button></div>
+  <p class="ddesc">If SoloBCH Forge is useful to you, a tip is hugely appreciated and helps keep it maintained. Tap an address to copy it.</p>
+  <div class="addr" onclick="cp('bitcoincash:qpp5dt6yh7u2dtm9ted23dmdnfpf99yrmcuzs6fhns')"><div class="chain">BCH</div><div class="a">bitcoincash:qpp5dt6yh7u2dtm9ted23dmdnfpf99yrmcuzs6fhns</div><span class="ci">&#10697;</span></div>
+  <div class="addr" onclick="cp('bc1q5z24l8kuz3ht4zytk9la2mxj7tlhgavw6j9k00')"><div class="chain">BTC</div><div class="a">bc1q5z24l8kuz3ht4zytk9la2mxj7tlhgavw6j9k00</div><span class="ci">&#10697;</span></div>
+  <div class="addr" onclick="cp('0xeaA00aD2bd100126a0E591b25A564d8dE4b05c0C')"><div class="chain">ETH</div><div class="a">0xeaA00aD2bd100126a0E591b25A564d8dE4b05c0C</div><span class="ci">&#10697;</span></div>
+ </div>
 </div>
 <div id="toast" hidden></div>
 <script>
@@ -284,6 +310,9 @@ async function tick(){
   document.getElementById('foot').textContent=foot;
  }catch(e){document.getElementById('foot').textContent='status fetch failed: '+e;}
 }
+function openDonate(){document.getElementById('donate').hidden=false;}
+function closeDonate(){document.getElementById('donate').hidden=true;}
+document.addEventListener('keydown',function(e){if(e.key==='Escape')closeDonate();});
 loadPrefs().then(()=>{tick();setInterval(tick,2000);});
 </script></body></html>"""
 
