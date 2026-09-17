@@ -26,6 +26,8 @@ log = logging.getLogger("solobch.jobs")
 DIFF1_TARGET = 0x00000000FFFF0000000000000000000000000000000000000000000000000000
 JOB_HISTORY = 12
 MIN_BROADCAST_GAP = 8.0           # throttle mock re-pushes during rapid IBD churn
+TEMPLATE_REFRESH = 30.0           # re-fetch the template this often on an unchanged
+                                  # tip (picks up new fee-paying txs + fresh curtime)
 EXTRANONCE1_SIZE = 4              # bytes; server-assigned per connection
 EXTRANONCE2_SIZE = 4             # bytes; advertised in mining.subscribe
 COINBASE_TAG = b"/SoloBCH Forge/"
@@ -44,7 +46,9 @@ def le_hex_to_be_bytes(h):
 
 
 def target_from_difficulty(diff):
-    return int(DIFF1_TARGET / diff)
+    # Integer arithmetic: DIFF1_TARGET is a 224-bit number, and a float divide
+    # would silently round it to 53 bits of precision.
+    return DIFF1_TARGET // max(1, int(diff))
 
 
 class MockJob:
@@ -54,10 +58,23 @@ class MockJob:
         self.job_id = job_id
         self._prevhash_internal = secrets.token_bytes(32)
         self.prevhash_notify = word_swap(self._prevhash_internal).hex()
-        self.coinb1 = ("01000000010000000000000000000000000000000000000000000000"
-                       "0000000000000000000000ffffffff20")
-        self.coinb2 = ("ffffffff0100f2052a01000000434104"
-                       "00000000000000000000000000000000ac00000000")
+        # version | 1 input | null prevout | 0xffffffff | scriptSig len 8
+        # (= extranonce1 + extranonce2, 4 bytes each) ... coinb2 = sequence |
+        # 1 output | 50 BCH to an all-zero P2PKH (unspendable) | locktime 0.
+        # Never submitted, but every length field is consistent so a miner
+        # that parses the coinbase sees a well-formed transaction.
+        self.coinb1 = ("01000000"                    # tx version 1
+                       "01"                          # 1 input
+                       + "00" * 32 +                 # null prevout hash (32 bytes)
+                       "ffffffff"                    # prevout index
+                       "08")                         # scriptSig length = en1 + en2
+        self.coinb2 = ("ffffffff"                    # sequence
+                       "01"                          # 1 output
+                       "00f2052a01000000"            # 50 BCH in satoshis (LE)
+                       "19" "76a914"                 # 25-byte P2PKH: OP_DUP OP_HASH160 <20>
+                       + "00" * 20 +                 # all-zero hash160 (unspendable)
+                       "88ac"                        # OP_EQUALVERIFY OP_CHECKSIG
+                       "00000000")                   # locktime
         self.merkle_branch = []
         self.version = "20000000"
         # Advertise a realistic, HARD network target (~BCH mainnet difficulty) so
@@ -117,6 +134,7 @@ class JobManager:
         self.node_status = {}
         self._last_tip = None
         self._last_broadcast = 0.0
+        self._template_at = 0.0           # monotonic time the current real template was fetched
         self._new_mock()                  # seed an initial job
 
     # --- job lifecycle --------------------------------------------------- #
@@ -256,9 +274,13 @@ class JobManager:
     @staticmethod
     def _post_webhook(url, payload):
         import urllib.request
+        low = url.lower()
+        # Defence in depth (the Settings page validates too): never let urllib
+        # follow a file:// or other non-HTTP scheme that slipped into config.
+        if not low.startswith(("http://", "https://")):
+            raise ValueError("webhook URL must start with http:// or https://")
         # Discord webhooks reject arbitrary JSON — they require {content|embeds}.
         # Any other (custom) endpoint gets the raw structured payload.
-        low = url.lower()
         if "discord.com/api/webhooks" in low or "discordapp.com/api/webhooks" in low:
             body = {"content": JobManager._discord_message(payload)}
         else:
@@ -366,30 +388,63 @@ class JobManager:
 
         first = self._last_tip is None
         tip_changed = tip != self._last_tip
-        self._last_tip = tip
         pct = (info.get("verificationprogress") or 0) * 100
 
         if self.node_ready:
-            if tip_changed or self.mode != "real":
+            # `_last_tip` is only advanced once a job for that tip is actually
+            # installed. Recording it up front (as an earlier version did) meant
+            # a failed fetch left miners parked on the previous tip's template
+            # with nothing to trigger a retry until the *next* block.
+            stale = (self.mode == "real"
+                     and time.monotonic() - self._template_at >= TEMPLATE_REFRESH)
+            if tip_changed or self.mode != "real" or stale:
+                # A clean job is required when the previous block changed (old
+                # work is worthless). A periodic refresh on the same tip is sent
+                # with clean_jobs=False so miners finish their current job and
+                # shares on the previous job id stay valid.
+                clean = tip_changed or self.mode != "real"
                 try:
                     gbt = await loop.run_in_executor(None, self.rpc.getblocktemplate)
-                    tmpl = self._new_real(gbt, clean=True)
+                    tmpl = self._new_real(gbt, clean=clean)
                     self.mode = "real"
-                    log.info("REAL job %s — height=%s tip=%s… value=%s sat, %d tx "
-                             "-> %d miner(s)", tmpl.job_id, tmpl.height, tip[:16],
-                             tmpl.coinbasevalue, len(tmpl.tx_data), len(self.subscribers))
+                    self._last_tip = tip
+                    self._template_at = time.monotonic()
+                    if clean:
+                        log.info("REAL job %s — height=%s tip=%s… value=%s sat, %d tx "
+                                 "-> %d miner(s)", tmpl.job_id, tmpl.height, tip[:16],
+                                 tmpl.coinbasevalue, len(tmpl.tx_data),
+                                 len(self.subscribers))
+                    else:
+                        log.debug("template refresh %s — height=%s value=%s sat, %d tx",
+                                  tmpl.job_id, tmpl.height, tmpl.coinbasevalue,
+                                  len(tmpl.tx_data))
                     await self._broadcast()
-                except RPCError as e:
+                except Exception as e:
+                    # Every failure mode lands here (RPC error, transport timeout,
+                    # malformed template), never just RPCError: whatever went
+                    # wrong, miners must not be left on a template for a tip that
+                    # no longer exists.
+                    if not clean:
+                        # Same tip, refresh only: the current job is still valid,
+                        # keep it and try again after the refresh interval.
+                        log.warning("template refresh failed (%s); keeping job %s",
+                                    e, self.current_job_id)
+                        self._template_at = time.monotonic()
+                        return
                     if self.mode != "mock":
                         log.warning("getblocktemplate unavailable (%s); mock fallback", e)
                     if self.mode != "mock" or tip_changed:
                         self._new_mock(clean=True)
                         self.mode = "mock"
                         await self._broadcast()
+                    # Mock mode retries getblocktemplate on every poll regardless
+                    # of the tip, so recording it here cannot suppress a retry.
+                    self._last_tip = tip
             return
 
         # IBD -> mock, tip-driven with throttle
         if tip_changed:
+            self._last_tip = tip
             if not first and (time.monotonic() - self._last_broadcast) < MIN_BROADCAST_GAP:
                 log.info("tip -> %s… height=%s (%.2f%%) [job hold: within %.0fs gap]",
                          tip[:16], info.get("blocks"), pct, MIN_BROADCAST_GAP)

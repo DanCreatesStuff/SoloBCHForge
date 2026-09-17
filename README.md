@@ -55,9 +55,10 @@ This app is distributed through a **community app store**. In Umbrel:
 ## Configure
 
 1. Open **SoloBCH Forge** from your Umbrel dashboard — it lands on the status page.
-2. Go to **⚙ Settings** and paste your node's RPC password. Find it in the
-   **Bitcoin Cash Node** app under its **"Node RPC — for apps"** panel. (Host, port,
-   and user default to the Bitcoin Cash Node app and rarely need changing.)
+2. The node connection is automatic: Umbrel hands the app the Bitcoin Cash Node's
+   RPC address and password, and the **⚙ Settings** page shows those fields locked.
+   (Running outside Umbrel? Enter them there — the password is in the Bitcoin Cash
+   Node app's **"Node RPC — for apps"** panel.)
 3. Point your miner at SoloBCH Forge:
    - **URL / host:** `stratum+tcp://<your-umbrel-ip>:3334`
    - **Username / worker:** your BCH address, optionally with a worker name —
@@ -65,7 +66,10 @@ This app is distributed through a **community app store**. In Umbrel:
    - **Password:** anything (ignored).
 
 Only a valid BCH CashAddr is accepted as the username — a Bitcoin `bc1…` address is
-rejected on purpose, since it would be unspendable on BCH.
+rejected on purpose, since it would be unspendable on BCH. Legacy `1…` addresses are
+not accepted either; convert them to CashAddr first. Give each miner its own worker
+name (`.rig1`, `.rig2`) so they show as separate rows; worker names may contain
+letters, digits, `.`, `_` and `-` only.
 
 ## Ports
 

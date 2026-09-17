@@ -8,6 +8,11 @@ services:
     image: solobch-forge:dev
     container_name: solobch-forge
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     environment:
       - BCHN_RPC_HOST=bitcoind          # in-network hostname of the BCHN app
       - BCHN_RPC_PORT=8332
@@ -17,7 +22,11 @@ services:
       - PYTHONUNBUFFERED=1
     ports:
       - "3334:3334"                     # Stratum (miners, LAN)
-      - "3335:3335"                     # status dashboard/JSON (LAN, read-only)
+      # Status dashboard + settings API. Unlike the Umbrel app there is NO
+      # authentication in front of it here: anyone on the LAN can change
+      # settings, so bind it to localhost ("127.0.0.1:3335:3335") or a trusted
+      # interface if the LAN is not fully trusted.
+      - "3335:3335"
     volumes:
       - ./server:/app/server:ro         # dev: edit + `compose restart` picks it up, no rebuild
       - ./data:/data                    # persistent config.json

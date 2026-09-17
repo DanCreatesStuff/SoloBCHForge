@@ -22,15 +22,28 @@ services:
       - "3334:3334"                 # Stratum for miners (LAN)
     volumes:
       - ${APP_DATA_DIR}/data:/data  # persistent config.json + state
+    # Docker's default json-file driver never rotates: cap the log so months of
+    # share lines cannot fill a Pi's SD card.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     environment:
       APP_DATA_DIR: /data
       PYTHONUNBUFFERED: "1"
       # Connect to the Bitcoin Cash Node app via the values it exports to every
       # Umbrel app (see its exports.sh). Cross-app DNS by service name does not
       # work under umbreld, so we use the injected node IP — not "bitcoind".
-      # The RPC password is provided by Umbrel too, so no manual entry is needed
-      # (anything set in the app's Settings UI still takes precedence).
+      # The RPC password is provided by Umbrel too, so no manual entry is needed.
+      # Environment values take precedence over config.json, so these four
+      # fields show as locked on the app's Settings page.
       BCHN_RPC_HOST: ${APP_BITCOIN_CASH_NODE_NODE_IP}
       BCHN_RPC_PORT: ${APP_BITCOIN_CASH_NODE_RPC_PORT}
       BCHN_RPC_USER: ${APP_BITCOIN_CASH_NODE_RPC_USER}
       BCHN_RPC_PASSWORD: ${APP_BITCOIN_CASH_NODE_RPC_PASS}
+      # The node app publishes ZMQ hashblock on this port (it runs
+      # -zmqpubhashblock=tcp://0.0.0.0:28332 and exports the port). Same DNS
+      # caveat as above: the built-in default "tcp://bitcoind:28332" cannot
+      # resolve here, so build the endpoint from the injected IP.
+      SOLOBCH_ZMQ_ENDPOINT: tcp://${APP_BITCOIN_CASH_NODE_NODE_IP}:${APP_BITCOIN_CASH_NODE_ZMQ_HASHBLOCK_PORT}

@@ -4,11 +4,14 @@ SoloBCH Forge - configuration loading.
 
 Precedence (low -> high): built-in defaults < config.json < environment variables.
   * config.json lives under APP_DATA_DIR (Umbrel app) or SOLOBCH_CONFIG; it is the
-    persistent, user-editable settings file (written by the future config page).
-  * environment variables are used by the dev container and always win, so the
-    existing BCHN_RPC_* setup keeps working unchanged.
+    persistent, user-editable settings file (written by the Settings page).
+  * environment variables always win. The Umbrel app injects the node's RPC
+    host/port/user/password this way, so a stale or mistyped value in
+    config.json can never break the node connection; the dev container uses the
+    same BCHN_RPC_* variables. env_locked() reports which keys are pinned so the
+    Settings page can grey them out instead of silently ignoring edits.
 
-Secrets (the RPC password) are never logged.
+Secrets (the RPC password) are never logged, and config.json is written 0600.
 """
 
 import json
@@ -115,10 +118,20 @@ def save(updates):
     current.update({k: v for k, v in updates.items() if k in DEFAULTS})
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     tmp = path + ".tmp"
-    with open(tmp, "w") as f:
+    # The file holds the RPC password: create it owner-read/write only. The
+    # mode set at creation survives os.replace, so the final file is 0600 too.
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
         json.dump(current, f, indent=2)
     os.replace(tmp, path)
     return current
+
+
+def env_locked():
+    """Keys whose value is pinned by an environment variable. The Settings page
+    may still save them to config.json, but the env value wins on every load."""
+    return [k for k, env in _ENV.items()
+            if os.environ.get(env) not in (None, "")]
 
 
 def redacted(cfg):

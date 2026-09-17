@@ -53,7 +53,7 @@ A separate **"LoneStrike Cash"** BCH solo Stratum app for ASICs (+ Fulcrum) alre
 - **Docker (dev/standalone container): ✅ DONE (2026-09-11).** `Dockerfile` (python:3.13-slim, non-root, healthcheck) + `docker-compose.yml` (external `umbrel_main_network`, reaches `bitcoind:8332`, publishes 3334/3335, `restart: unless-stopped`) + secret in `~/bch-stratum/.env`. Verified `Up (healthy)`, container→node connection live, miner hashing. Ops: `cd ~/bch-stratum && sudo docker compose up -d --build | logs -f | restart | down`. Code changes: `scp` server files, `sudo docker compose restart` (bind-mounted `./server`, no rebuild).
 - **Umbrel app packaging (pending):** `umbrel-app.yml`, app-proxy UI (status/miners/blocks/config), payout-address + settings config, optional Telegram. Do after Phase 2.
 
-Ports in use by SoloBCH Forge: **3334** Stratum (miners), **3335** status dashboard/JSON (LAN, read-only).
+Ports in use by SoloBCH Forge: **3334** Stratum (miners), **3335** status dashboard + settings API. In the Umbrel app 3335 sits behind app_proxy auth; in the dev compose it is published to the LAN **unauthenticated**, so bind it to localhost there if the LAN is not trusted.
 
 ## Stack decision
 - **Prototype: Python 3 + asyncio, standard library only** (asyncio, json, hashlib, struct). No pip deps in Phase 1A → nothing installed on the Umbrel host, maximum isolation, instant iteration.
@@ -62,7 +62,7 @@ Ports in use by SoloBCH Forge: **3334** Stratum (miners), **3335** status dashbo
 
 ## BCH-specific risks / notes (why this isn't "BTC with a renamed coin")
 1. **No SegWit on BCH.** No witness commitment in the coinbase, no witness reserved value, no witness data. GBT must NOT request `segwit` rules. (This makes BCH coinbase construction *simpler* than modern BTC.)
-2. **CashAddr payout address.** `bitcoincash:q...` must be decoded to hash160 → P2PKH scriptPubKey for the coinbase output. Legacy Base58 also possible. Needs a CashAddr decoder (Phase 2).
+2. **CashAddr payout address.** `bitcoincash:q...` must be decoded to hash160 → P2PKH scriptPubKey for the coinbase output. Only CashAddr is implemented; legacy Base58 usernames are rejected at authorize (users convert them first). Needs a CashAddr decoder (Phase 2).
 3. **ASERT difficulty (aserti3-2d).** nBits comes straight from BCHN's GBT; the server just uses it. No custom DAA math needed.
 4. **AxeOS/NerdQaxe expects `mining.configure` + version-rolling (ASICBoost/BIP310)** before subscribe. Phase 1A must answer `mining.configure` and honor the version mask, or behavior is flaky.
 5. **Mock job must be structurally valid hex** (correct field lengths) or AxeOS may reject/disconnect even in Phase 1A.

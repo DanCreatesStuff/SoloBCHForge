@@ -18,6 +18,7 @@ Run directly to self-test against the node:
 """
 
 import base64
+import http.client
 import json
 import os
 import urllib.error
@@ -64,15 +65,27 @@ class BitcoinCashRPC:
                 body = json.load(resp)
         except urllib.error.HTTPError as e:
             # bitcoind returns HTTP 500 for RPC errors, with a JSON error body.
-            raw = e.read()
             try:
+                raw = e.read()
                 body = json.loads(raw)
-            except ValueError:
+            except Exception:
                 raise RPCError({"code": e.code,
-                                "message": f"HTTP {e.code}: {raw[:200]!r}"})
+                                "message": f"HTTP {e.code}: {e.reason}"})
         except urllib.error.URLError as e:
             raise RPCError({"code": -1,
                             "message": f"connection failed: {e.reason}"})
+        except (OSError, http.client.HTTPException, ValueError) as e:
+            # urlopen only wraps errors raised while *sending* the request in
+            # URLError. A timeout or dropped connection while waiting for or
+            # reading the response (TimeoutError, RemoteDisconnected,
+            # IncompleteRead) propagates raw, and a truncated body fails JSON
+            # decoding. Normalize all of them so callers can rely on RPCError
+            # being the one failure type they need to handle.
+            raise RPCError({"code": -1,
+                            "message": f"transport error: "
+                                       f"{e.__class__.__name__}: {e}"})
+        if not isinstance(body, dict):
+            raise RPCError({"code": -1, "message": "malformed RPC response"})
         if body.get("error"):
             raise RPCError(body["error"])
         return body.get("result")

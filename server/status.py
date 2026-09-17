@@ -8,17 +8,34 @@ Runs on the asyncio loop (reads live state safely, no threads). Routes:
     GET  /metrics     Prometheus text exposition (for Grafana/Prometheus)
     GET  /history     persisted hashrate/share time-series (dashboard chart)
     GET  /config      settings page
-    GET  /config.json current settings (password redacted)
-    POST /config      save settings -> config.json, applied live
+    GET  /config.json current settings (password redacted, env-locked keys listed)
+    POST /config      save settings -> config.json (validated), applied live
+    POST /test-rpc    probe the node with the saved credentials
+    POST /test-webhook  send a test alert to the saved webhook
+    POST /reset-stats   zero lifetime counters (found blocks are kept)
+    GET/POST /ui-prefs  dashboard card layout
 
 NEVER returns the RPC password. In the Umbrel app this is behind app_proxy auth.
+Every state-changing route is POST-only and requires Content-Type:
+application/json, which a cross-site HTML form cannot send and a cross-origin
+fetch cannot send without a CORS preflight we never grant, so a web page the
+operator happens to visit cannot drive this API. CORS is opened only for the
+read-only /status, /metrics and /history endpoints.
 """
 
 import asyncio
 import json
+import re
 import time
 
 import config
+
+REQUEST_TIMEOUT = 10.0        # seconds to receive a full request
+MAX_HEADERS = 100
+MAX_BODY = 65536
+MAX_HTTP_CONNECTIONS = 32
+CORS_OPEN = ("/status", "/metrics", "/history")   # read-only, safe to share
+_CARD_ID = re.compile(r"[a-z0-9_]{1,40}")
 
 
 def human_hashrate(hps: float) -> str:
@@ -308,6 +325,7 @@ function ago(s){if(s==null)return '—';s=Math.round(s);if(s<60)return s+'s';
 if(s<3600)return Math.floor(s/60)+'m '+(s%60)+'s';return Math.floor(s/3600)+'h '+Math.floor(s%3600/60)+'m';}
 let editing=false;let hidden=new Set();
 const CARD_LABELS={best_diff:'Best difficulty',hr_1m:'Hashrate 1m',hr_5m:'Hashrate 5m',hr_1h:'Hashrate 1h',accepted:'Accepted',rejected:'Rejected',shares_per_sec:'Shares/s',workers:'Workers',net_diff:'Network difficulty',reward:'Block reward',expected_block:'Expected block',best_vs_block:'Best share vs block',total_hashes:'Total hashes',lifetime_avg:'Lifetime avg',mining_time:'Mining time',node:'Node',mining:'Mining',stratum_port:'Stratum port',block_height:'Block height',difficulty:'Difficulty',uptime:'Uptime'};
+function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
 function minusBtn(id){return editing?'<button class="minus" title="Hide card" onclick="hideCard(\\''+id+'\\')">&minus;</button>':'';}
 function statX(id,k,inner,hl){if(hidden.has(id))return '';return '<div class="stat'+(hl?' hl':'')+'" data-card="'+id+'">'+minusBtn(id)+'<div class="k">'+k+'</div>'+inner+'</div>';}
 function stat(id,k,v,hl){return statX(id,k,'<div class="v">'+v+'</div>',hl);}
@@ -319,7 +337,7 @@ function renderRemoved(){
  if(!editing){el.hidden=true;el.innerHTML='';return;}
  el.hidden=false;const ids=[...hidden];
  el.innerHTML='<span class="rlabel">Hidden'+(ids.length?' — tap to restore:':': none')+'</span>'+
-  ids.map(id=>'<button class="chip" onclick="showCard(\\''+id+'\\')">+ '+(CARD_LABELS[id]||id)+'</button>').join('');
+  ids.map(id=>'<button class="chip" data-id="'+esc(id)+'" onclick="showCard(this.dataset.id)">+ '+esc(CARD_LABELS[id]||id)+'</button>').join('');
 }
 function toggleEdit(){editing=!editing;const b=document.getElementById('editBtn');b.textContent=editing?'Done':'Edit layout';b.classList.toggle('active',editing);document.body.classList.toggle('editing',editing);renderRemoved();tick();}
 function hideCard(id){hidden.add(id);savePrefs();renderRemoved();tick();}
@@ -328,7 +346,7 @@ function humanHR(h){if(!h)return '0 <small>H/s</small>';const u=['H','KH','MH','
 function humanNum(n){if(!n)return '0';const u=['','K','M','G','T','P'];let i=0;while(n>=1000&&i<u.length-1){n/=1000;i++;}return n.toFixed(i?2:0)+(u[i]?' <small>'+u[i]+'</small>':'');}
 function humanHashes(h){if(!h)return '0 <small>H</small>';const u=['H','KH','MH','GH','TH','PH','EH','ZH'];let i=0;while(h>=1000&&i<u.length-1){h/=1000;i++;}return h.toFixed(2)+' <small>'+u[i]+'</small>';}
 function shortaddr(a){if(!a)return '<span class="bad">— none</span>';a=a.replace(/^bitcoincash:/,'');return a.length>22?a.slice(0,12)+'…'+a.slice(-6):a;}
-function copyAddr(a){if(!a)return '<span class="bad">— none</span>';return '<span class="copy" title="Click to copy '+a+'" onclick="cp(\\''+a+'\\')">'+shortaddr(a)+'</span>';}
+function copyAddr(a){if(!a)return '<span class="bad">— none</span>';return '<span class="copy" title="Click to copy '+esc(a)+'" data-a="'+esc(a)+'" onclick="cp(this.dataset.a)">'+esc(shortaddr(a))+'</span>';}
 let _toastT;function toast(m){const el=document.getElementById('toast');if(!el)return;el.textContent=m;el.hidden=false;clearTimeout(_toastT);_toastT=setTimeout(()=>{el.hidden=true;},1500);}
 function cp(t){
  let ok=false;
@@ -415,11 +433,11 @@ async function tick(){
   const mb=document.getElementById('miners');
   if(!s.miners.length){mb.innerHTML='<tr><td colspan="11" class="empty">No miners connected</td></tr>';}
   else{mb.innerHTML=s.miners.map(m=>'<tr>'+
-   '<td data-label="Miner">'+(m.worker||'—')+(m.authorized?'':' <span class="dim">(connecting)</span>')+'</td>'+
-   '<td data-label="IP">'+m.ip+'</td>'+
-   '<td data-label="Model" class="dim">'+(m.model||'—')+'</td>'+
+   '<td data-label="Miner">'+esc(m.worker||'—')+(m.authorized?'':' <span class="dim">(connecting)</span>')+'</td>'+
+   '<td data-label="IP">'+esc(m.ip)+'</td>'+
+   '<td data-label="Model" class="dim">'+esc(m.model||'—')+'</td>'+
    '<td data-label="Payout" class="dim">'+copyAddr(m.payout)+'</td>'+
-   '<td data-label="Hashrate" class="ok">'+m.hashrate+'</td>'+
+   '<td data-label="Hashrate" class="ok">'+esc(m.hashrate)+'</td>'+
    '<td data-label="Diff" class="dim">'+(m.difficulty!=null?humanNum(m.difficulty):'—')+'</td>'+
    '<td data-label="Best diff" class="dim">'+humanNum(m.best_diff)+'</td>'+
    '<td data-label="Blocks"'+(m.blocks?' class="ok"':'')+'>'+(m.blocks||0)+'</td>'+
@@ -435,12 +453,12 @@ async function tick(){
       const acc=String(b.status).startsWith('accepted');
       const conf=(acc&&n.blocks!=null&&b.height!=null)?Math.max(0,n.blocks-b.height+1):null;
       const hash=b.hash||'';
-      const hcell=hash?'<a class="lnk" href="https://blockchair.com/bitcoin-cash/block/'+encodeURIComponent(hash)+'" target="_blank" rel="noopener">'+hash.slice(0,20)+'…</a>':'—';
+      const hcell=hash?'<a class="lnk" href="https://blockchair.com/bitcoin-cash/block/'+encodeURIComponent(hash)+'" target="_blank" rel="noopener">'+esc(hash.slice(0,20))+'…</a>':'—';
       return '<tr>'+
-       '<td data-label="Miner">'+(b.worker||'—')+'</td>'+
-       '<td data-label="Height">'+b.height+'</td>'+
+       '<td data-label="Miner">'+esc(b.worker||'—')+'</td>'+
+       '<td data-label="Height">'+esc(b.height)+'</td>'+
        '<td data-label="Hash" class="dim">'+hcell+'</td>'+
-       '<td data-label="Status" class="'+(acc?'ok':'bad')+'">'+b.status+'</td>'+
+       '<td data-label="Status" class="'+(acc?'ok':'bad')+'">'+esc(b.status)+'</td>'+
        '<td data-label="Conf" class="dim">'+(conf!=null?conf:'—')+'</td>'+
        '<td data-label="Payout" class="dim">'+copyAddr(b.payout)+'</td>'+
        '<td data-label="When" class="dim">'+ago((Date.now()/1000)-b.time)+' ago</td>'+
@@ -508,7 +526,8 @@ h2{font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:#8b949e;ma
 <div class="row"><div><label>RPC port</label><input id="bchn_rpc_port"></div>
 <div><label>RPC user</label><input id="bchn_rpc_user"></div></div>
 <label>RPC password</label><input id="bchn_rpc_password" type="password" placeholder="leave blank to keep current">
-<div class="note">Copy this from the Bitcoin Cash Node app's "Node RPC" panel. Stored in config.json, never shown again.</div>
+<div class="note" id="envnote" hidden>Greyed-out fields are provided automatically by Umbrel from the Bitcoin Cash Node app and cannot be changed here.</div>
+<div class="note">Elsewhere, copy these from the Bitcoin Cash Node app's "Node RPC" panel. Stored in config.json, never shown again.</div>
 <div class="inline"><button id="testrpc" class="alt">Test connection</button><span id="rpcmsg" class="note"></span></div>
 </div>
 
@@ -564,16 +583,23 @@ h2{font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:#8b949e;ma
 const FIELDS=['bchn_rpc_host','bchn_rpc_port','bchn_rpc_user','stratum_port','status_port','share_difficulty','vardiff_enabled','vardiff_target_spm','vardiff_min','vardiff_max','webhook_url'];
 const BOOL_FIELDS=['vardiff_enabled'];
 const CHECK_FIELDS=['notify_block','notify_best_share','notify_miner_offline'];
+const JSON_HDR={'content-type':'application/json'};
+async function postJSON(url,body){return (await fetch(url,{method:'POST',headers:JSON_HDR,body:JSON.stringify(body||{})})).json();}
 async function load(){
  const c=await (await fetch('/config.json')).json();
  FIELDS.forEach(f=>{const el=document.getElementById(f);if(!el)return;el.value=BOOL_FIELDS.includes(f)?String(!!c[f]):(c[f]==null?'':c[f]);});
  CHECK_FIELDS.forEach(f=>{const el=document.getElementById(f);if(el)el.checked=!!c[f];});
+ // Keys pinned by the environment (Umbrel injects the node's RPC details) are
+ // shown but locked, instead of silently ignoring what the user types.
+ const locked=new Set(c.env_locked||[]);
+ locked.forEach(f=>{const el=document.getElementById(f);if(!el)return;el.disabled=true;el.title='Set by the environment; edits here are ignored.';if(f==='bchn_rpc_password')el.placeholder='provided automatically';});
+ if(locked.size)document.getElementById('envnote').hidden=false;
 }
 function collect(){
- const body={};FIELDS.forEach(f=>{body[f]=document.getElementById(f).value;});
+ const body={};FIELDS.forEach(f=>{const el=document.getElementById(f);if(!el.disabled)body[f]=el.value;});
  CHECK_FIELDS.forEach(f=>{body[f]=document.getElementById(f).checked;});
- const pw=document.getElementById('bchn_rpc_password').value;
- if(pw)body.bchn_rpc_password=pw;
+ const pwEl=document.getElementById('bchn_rpc_password');
+ if(pwEl.value&&!pwEl.disabled)body.bchn_rpc_password=pwEl.value;
  return body;
 }
 function num(id){return parseFloat(document.getElementById(id).value);}
@@ -597,7 +623,7 @@ async function save(){
  if(err){msg.innerHTML='<span style="color:#f85149">'+err+'</span>';return false;}
  msg.innerHTML='Saving…';
  try{
-  const r=await (await fetch('/config',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(collect())})).json();
+  const r=await postJSON('/config',collect());
   msg.innerHTML = r.ok ? '<span style="color:#3fb950">Saved. RPC, difficulty, vardiff &amp; webhook applied live; port changes need an app restart.</span>'
                        : '<span style="color:#f85149">Error: '+(r.error||'unknown')+'</span>';
   return !!r.ok;
@@ -607,7 +633,7 @@ document.getElementById('save').onclick=save;
 document.getElementById('testrpc').onclick=async()=>{
  const m=document.getElementById('rpcmsg');m.textContent='saving + testing…';
  if(!(await save())){m.textContent='';return;}
- try{const r=await (await fetch('/test-rpc')).json();
+ try{const r=await postJSON('/test-rpc');
   m.innerHTML = r.ok ? '<span style="color:#3fb950">OK — chain '+r.chain+', height '+r.blocks+(r.ibd?' (syncing)':' (synced)')+'</span>'
                      : '<span style="color:#f85149">Failed: '+(r.error||'?')+'</span>';
  }catch(e){m.innerHTML='<span style="color:#f85149">'+e+'</span>';}
@@ -615,7 +641,7 @@ document.getElementById('testrpc').onclick=async()=>{
 document.getElementById('testhook').onclick=async()=>{
  const m=document.getElementById('hookmsg');m.textContent='saving + sending…';
  if(!(await save())){m.textContent='';return;}
- try{const r=await (await fetch('/test-webhook')).json();
+ try{const r=await postJSON('/test-webhook');
   m.innerHTML = r.ok ? '<span style="color:#3fb950">Sent — check your endpoint</span>'
                      : '<span style="color:#f85149">Failed: '+(r.error||'?')+'</span>';
  }catch(e){m.innerHTML='<span style="color:#f85149">'+e+'</span>';}
@@ -623,7 +649,7 @@ document.getElementById('testhook').onclick=async()=>{
 document.getElementById('resetstats').onclick=async()=>{
  if(!confirm('Reset all-time best difficulty, lifetime share counts, total hashes and mining time?\\n\\nFound blocks are kept. This cannot be undone.'))return;
  const m=document.getElementById('resetmsg');m.textContent='resetting…';
- try{const r=await (await fetch('/reset-stats',{method:'POST'})).json();
+ try{const r=await postJSON('/reset-stats');
   m.innerHTML = r.ok ? '<span style="color:#3fb950">Lifetime stats reset.</span>'
                      : '<span style="color:#f85149">Failed: '+(r.error||'?')+'</span>';
  }catch(e){m.innerHTML='<span style="color:#f85149">'+e+'</span>';}
@@ -633,6 +659,7 @@ document.getElementById('exportcfg').onclick=async()=>{
  try{
   const c=await (await fetch('/config.json')).json();
   delete c.bchn_rpc_password;                       // never export the secret
+  delete c.env_locked;                              // runtime info, not a setting
   const blob=new Blob([JSON.stringify(c,null,2)],{type:'application/json'});
   const a=document.createElement('a');a.href=URL.createObjectURL(blob);
   a.download='solobch-forge-config.json';document.body.appendChild(a);a.click();
@@ -659,6 +686,78 @@ load();
 </script></body></html>"""
 
 
+def _json(status, obj):
+    return status, "application/json", json.dumps(obj).encode()
+
+
+def _to_int(v):
+    if isinstance(v, bool):
+        raise ValueError("boolean")
+    if isinstance(v, int):
+        return v
+    if isinstance(v, float) and v.is_integer():
+        return int(v)
+    if isinstance(v, str):
+        return int(v.strip())
+    raise ValueError("not a number")
+
+
+def validate_updates(updates, current):
+    """Server-side sanity checks for a settings POST (the browser validates too,
+    but anything can POST). Normalizes numeric strings to ints in place and
+    returns an error message, or None when the updates are acceptable. A bad
+    value that got saved could otherwise crash-loop the app on its next start
+    (share difficulty 0 divides by zero, a port above 65535 fails to bind)."""
+    ints = {}
+    for k in ("bchn_rpc_port", "stratum_port", "status_port", "share_difficulty",
+              "vardiff_target_spm", "vardiff_min", "vardiff_max"):
+        if k in updates:
+            try:
+                ints[k] = _to_int(updates[k])
+            except (TypeError, ValueError):
+                return f"{k} must be a whole number"
+    for k in ("bchn_rpc_port", "stratum_port", "status_port"):
+        if k in ints and not 1 <= ints[k] <= 65535:
+            return f"{k} must be between 1 and 65535"
+    for k in ("share_difficulty", "vardiff_target_spm", "vardiff_min", "vardiff_max"):
+        if k in ints and ints[k] < 1:
+            return f"{k} must be at least 1"
+    if ints.get("stratum_port", current["stratum_port"]) == \
+            ints.get("status_port", current["status_port"]):
+        return "Stratum and status ports must differ"
+    if ints.get("vardiff_max", current["vardiff_max"]) < \
+            ints.get("vardiff_min", current["vardiff_min"]):
+        return "vardiff_max must be >= vardiff_min"
+    updates.update(ints)
+
+    for k in ("bchn_rpc_host", "bchn_rpc_user", "bchn_rpc_password", "webhook_url",
+              "zmq_block_endpoint"):
+        if k in updates and not isinstance(updates[k], str):
+            return f"{k} must be a string"
+    if "bchn_rpc_host" in updates:
+        host = updates["bchn_rpc_host"].strip()
+        if not host or len(host) > 253 or any(c in host for c in "/\\ ?#@\r\n"):
+            return "bchn_rpc_host must be a hostname or IP address"
+        updates["bchn_rpc_host"] = host
+    if "webhook_url" in updates:
+        url = updates["webhook_url"].strip()
+        if url and not url.lower().startswith(("http://", "https://")):
+            return "Webhook URL must start with http:// or https://"
+        if len(url) > 2048 or any(c in url for c in " \r\n"):
+            return "Webhook URL is not valid"
+        updates["webhook_url"] = url
+    for k in ("vardiff_enabled", "notify_block", "notify_best_share",
+              "notify_miner_offline", "zmq_enabled"):
+        v = updates.get(k)
+        if v is None or isinstance(v, bool):
+            continue
+        if not (isinstance(v, str)
+                and v.strip().lower() in ("1", "0", "true", "false", "yes", "no",
+                                          "on", "off")):
+            return f"{k} must be true or false"
+    return None
+
+
 class StatusServer:
     def __init__(self, server, jobs, host, port, history=None):
         self.server = server
@@ -666,44 +765,74 @@ class StatusServer:
         self.host = host
         self.port = port
         self.history = history
+        self._active = 0
 
     async def start(self):
         return await asyncio.start_server(self._handle, self.host, self.port)
 
-    async def _handle(self, reader, writer):
-        try:
-            request_line = await reader.readline()
-            parts = request_line.decode(errors="replace").split()
-            method = parts[0] if parts else "GET"
-            path = parts[1] if len(parts) > 1 else "/"
-            headers = {}
-            while True:
-                line = await reader.readline()
-                if line in (b"\r\n", b"\n", b""):
-                    break
-                k, _, v = line.decode(errors="replace").partition(":")
-                headers[k.strip().lower()] = v.strip()
-            body = b""
-            if method == "POST":
-                n = int(headers.get("content-length", "0") or 0)
-                if 0 < n <= 65536:
-                    body = await reader.readexactly(n)
+    async def _read_request(self, reader):
+        request_line = await reader.readline()
+        parts = request_line.decode(errors="replace").split()
+        method = parts[0].upper() if parts else "GET"
+        path = parts[1] if len(parts) > 1 else "/"
+        headers = {}
+        while True:
+            line = await reader.readline()
+            if line in (b"\r\n", b"\n", b""):
+                break
+            if len(headers) >= MAX_HEADERS:
+                raise ValueError("too many headers")
+            k, _, v = line.decode(errors="replace").partition(":")
+            headers[k.strip().lower()] = v.strip()
+        body = b""
+        if method == "POST":
+            n = int(headers.get("content-length", "0") or 0)
+            if n > MAX_BODY:
+                raise ValueError("body too large")
+            if n > 0:
+                body = await reader.readexactly(n)
+        return method, path, headers, body
 
-            status, ctype, out = self._route(method, path, body)
+    async def _handle(self, reader, writer):
+        if self._active >= MAX_HTTP_CONNECTIONS:
+            writer.close()
+            return
+        self._active += 1
+        try:
+            try:
+                method, path, headers, body = await asyncio.wait_for(
+                    self._read_request(reader), REQUEST_TIMEOUT)
+            except (asyncio.TimeoutError, ValueError, asyncio.IncompleteReadError):
+                return
+            status, ctype, out = await self._route(method, path, headers, body)
             head = (f"HTTP/1.1 {status}\r\nContent-Type: {ctype}\r\n"
                     f"Content-Length: {len(out)}\r\n"
-                    "Access-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n")
+                    "X-Content-Type-Options: nosniff\r\n"
+                    "Referrer-Policy: no-referrer\r\n"
+                    "Cache-Control: no-store\r\n")
+            if path.startswith(CORS_OPEN):
+                head += "Access-Control-Allow-Origin: *\r\n"
+            head += "Connection: close\r\n\r\n"
             writer.write(head.encode() + out)
             await writer.drain()
         except Exception:
             pass
         finally:
+            self._active -= 1
             try:
                 writer.close()
             except Exception:
                 pass
 
-    def _route(self, method, path, body):
+    @staticmethod
+    def _is_json(headers):
+        ct = headers.get("content-type", "").split(";", 1)[0].strip().lower()
+        return ct == "application/json"
+
+    async def _route(self, method, path, headers, body):
+        if method == "OPTIONS":
+            # No CORS grant for preflights: cross-origin JSON POSTs are refused.
+            return "204 No Content", "text/plain", b""
         if path.startswith("/status"):
             out = json.dumps(build_snapshot(self.server, self.jobs), default=str)
             return "200 OK", "application/json", out.encode()
@@ -716,28 +845,39 @@ class StatusServer:
                         "text/plain; charset=utf-8", f"# error: {e}\n".encode())
         if path.startswith("/history"):
             pts = self.history.snapshot() if self.history else []
-            return ("200 OK", "application/json",
-                    json.dumps({"points": pts}).encode())
+            return _json("200 OK", {"points": pts})
         if path.startswith("/config.json"):
-            out = json.dumps(config.redacted(config.load()))
-            return "200 OK", "application/json", out.encode()
-        if path.startswith("/test-rpc"):
-            return self._test_rpc()
-        if path.startswith("/test-webhook"):
-            return self._test_webhook()
-        if path.startswith("/reset-stats"):
-            if method == "POST":
-                return self._reset_stats()
-            return ("405 Method Not Allowed", "application/json",
-                    json.dumps({"ok": False, "error": "POST only"}).encode())
-        if path.startswith("/ui-prefs"):
-            if method == "POST":
-                return self._save_ui_prefs(body)
+            out = config.redacted(config.load())
+            out["env_locked"] = config.env_locked()
+            return _json("200 OK", out)
+        if path.startswith("/ui-prefs") and method != "POST":
             return self._get_ui_prefs()
-        if path.startswith("/config"):
-            if method == "POST":
-                return self._save_config(body)
+        if path.startswith("/config") and not path.startswith("/config.json") \
+                and method != "POST":
             return "200 OK", "text/html; charset=utf-8", CONFIG_HTML.encode()
+
+        # --- state-changing routes: POST + JSON content type only ----------- #
+        mutating = ("/test-rpc", "/test-webhook", "/reset-stats", "/ui-prefs", "/config")
+        if path.startswith(mutating):
+            if method != "POST":
+                return _json("405 Method Not Allowed",
+                             {"ok": False, "error": "POST only"})
+            if not self._is_json(headers):
+                return _json("415 Unsupported Media Type",
+                             {"ok": False,
+                              "error": "Content-Type must be application/json"})
+            loop = asyncio.get_running_loop()
+            if path.startswith("/test-rpc"):
+                # Network calls run in the executor: a 30 s RPC timeout must
+                # never stall share processing for every connected miner.
+                return await loop.run_in_executor(None, self._test_rpc)
+            if path.startswith("/test-webhook"):
+                return await loop.run_in_executor(None, self._test_webhook)
+            if path.startswith("/reset-stats"):
+                return self._reset_stats()
+            if path.startswith("/ui-prefs"):
+                return self._save_ui_prefs(body)
+            return self._save_config(body)
         return "200 OK", "text/html; charset=utf-8", DASHBOARD_HTML.encode()
 
     def _test_rpc(self):
@@ -763,10 +903,15 @@ class StatusServer:
         # apply_config, so hiding a card never reconnects RPC or disturbs mining.
         try:
             data = json.loads(body or b"{}")
+            if not isinstance(data, dict):
+                raise ValueError("expected object")
             hc = data.get("hidden_cards", [])
             if not isinstance(hc, list):
                 raise ValueError("hidden_cards must be a list")
-            hc = [str(x)[:40] for x in hc][:64]     # sanitize + bound
+            # Card ids are our own [a-z0-9_] identifiers; anything else is
+            # dropped so nothing unexpected is ever stored or rendered.
+            hc = list(dict.fromkeys(x for x in hc
+                                    if isinstance(x, str) and _CARD_ID.fullmatch(x)))[:64]
             config.save({"hidden_cards": hc})
         except Exception as e:
             return ("400 Bad Request", "application/json",
@@ -809,13 +954,16 @@ class StatusServer:
                     json.dumps({"ok": False, "error": f"bad json: {e}"}).encode())
         updates = {}
         for k in config.DEFAULTS:
-            if k not in data:
+            if k not in data or k == "hidden_cards":     # layout has its own route
                 continue
             # blank means "leave unchanged" for every field except webhook_url,
             # where an empty string is the valid way to disable notifications.
             if data[k] == "" and k != "webhook_url":
                 continue
             updates[k] = data[k]
+        err = validate_updates(updates, config.load())
+        if err:
+            return _json("400 Bad Request", {"ok": False, "error": err})
         try:
             config.save(updates)
             cfg = config.load()

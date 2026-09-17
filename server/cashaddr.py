@@ -2,9 +2,10 @@
 """
 SoloBCH Forge - CashAddr (Bitcoin Cash address) decoder/encoder.
 
-BCH payout addresses are CashAddr (bitcoincash:q...) or legacy Base58; there is
-NO SegWit/bech32 on BCH, so Bitcoin `bc1...` addresses are intentionally rejected
-here. We need this to turn a configured payout address into the coinbase output
+Only CashAddr (bitcoincash:q.../p...) payout addresses are supported; legacy
+Base58 addresses are NOT decoded here (convert them to CashAddr first). There is
+NO SegWit/bech32 on BCH, so Bitcoin `bc1...` addresses are intentionally rejected.
+We need this to turn a configured payout address into the coinbase output
 script, and to validate whether a Stratum username is a usable BCH address.
 
 Reference: https://github.com/bitcoincashorg/bitcoincash.org/blob/master/spec/cashaddr.md
