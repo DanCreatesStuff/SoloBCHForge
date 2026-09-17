@@ -2,7 +2,7 @@ manifestVersion: 1
 id: solobch-forge
 category: bitcoin
 name: SoloBCH Forge
-version: "1.0.6"
+version: "1.1.0"
 tagline: Solo mine Bitcoin Cash to your own BCHN node
 icon: https://cdn.jsdelivr.net/gh/DanCreatesStuff/SoloBCHForge@main/solobch-forge/icon.svg
 description: >-
@@ -35,8 +35,10 @@ gallery:
 path: ""
 defaultPassword: ""
 releaseNotes: >-
-  Adds a "Buy me a coffee" button to the dashboard header with the developer's
-  BCH, BTC and ETH donation addresses — tap any address to copy it. Tips are
-  entirely optional and hugely appreciated.
+  Adds a hashrate history chart to the dashboard and near-instant job updates by
+  subscribing to the node's ZMQ block feed (falls back to polling automatically).
+  New Prometheus /metrics endpoint with a ready-made Grafana dashboard, settings
+  backup (export/import), and the server now honors your miner's suggested
+  difficulty.
 submitter: DanCreatesStuff
 submission: https://github.com/DanCreatesStuff/SoloBCHForge

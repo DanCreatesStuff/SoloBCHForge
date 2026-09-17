@@ -86,7 +86,7 @@ class JobManager:
     def __init__(self, rpc, share_difficulty, poll_interval=5.0,
                  vardiff=None, webhook_url="", stats=None,
                  notify_block=True, notify_best_share=True,
-                 notify_miner_offline=True):
+                 notify_miner_offline=True, zmq_endpoint=""):
         self.rpc = rpc
         self.stats = stats
         # `notify_on_*` flags gate each alert type; named to avoid clashing with
@@ -100,6 +100,10 @@ class JobManager:
         self.vardiff = vardiff or {"enabled": False, "target_spm": 20,
                                    "min": 128, "max": 4000000}
         self.webhook_url = webhook_url
+        self.zmq_endpoint = zmq_endpoint
+        # Set by the ZMQ hashblock watcher (if any) to wake the poll loop early
+        # when a new block lands, instead of waiting out poll_interval.
+        self._wake = asyncio.Event()
         self.subscribers = set()
         self._seq = 0
         self.sources = {}                 # job_id -> MockJob | BlockTemplate
@@ -300,22 +304,48 @@ class JobManager:
             except Exception:
                 self.subscribers.discard(c)
 
+    def poke(self):
+        """Wake the poll loop now (called by the ZMQ hashblock watcher)."""
+        self._wake.set()
+
+    async def _wait_next(self):
+        """Sleep until the next poll, woken early by a ZMQ new-block poke."""
+        try:
+            await asyncio.wait_for(self._wake.wait(), timeout=self.poll_interval)
+        except asyncio.TimeoutError:
+            pass
+        finally:
+            self._wake.clear()
+
     # --- polling loop ---------------------------------------------------- #
     async def run(self):
         loop = asyncio.get_running_loop()
-        log.info("job manager: polling node every %.1fs (share diff %s)",
-                 self.poll_interval, self.share_difficulty)
-        while True:
-            try:
-                await self._poll(loop)
-            except RPCError as e:
-                if self.node_reachable or self._last_tip is None:
-                    log.warning("node RPC error: %s", e)
-                self.node_reachable = False
-            except Exception as e:
-                log.warning("poll failure: %s", e)
-                self.node_reachable = False
-            await asyncio.sleep(self.poll_interval)
+        watcher = None
+        if self.zmq_endpoint:
+            from zmq_sub import watch_hashblock
+            watcher = asyncio.create_task(
+                watch_hashblock(self.zmq_endpoint, self.poke))
+            log.info("job manager: ZMQ hashblock push on %s (poll every %.1fs "
+                     "as fallback, share diff %s)",
+                     self.zmq_endpoint, self.poll_interval, self.share_difficulty)
+        else:
+            log.info("job manager: polling node every %.1fs (share diff %s)",
+                     self.poll_interval, self.share_difficulty)
+        try:
+            while True:
+                try:
+                    await self._poll(loop)
+                except RPCError as e:
+                    if self.node_reachable or self._last_tip is None:
+                        log.warning("node RPC error: %s", e)
+                    self.node_reachable = False
+                except Exception as e:
+                    log.warning("poll failure: %s", e)
+                    self.node_reachable = False
+                await self._wait_next()
+        finally:
+            if watcher:
+                watcher.cancel()
 
     async def _poll(self, loop):
         info = await loop.run_in_executor(None, self.rpc.getblockchaininfo)

@@ -30,6 +30,8 @@ DEFAULTS = {
     "notify_block": True,              # POST when a block is found
     "notify_best_share": True,         # POST when a new all-time best share is set
     "notify_miner_offline": True,      # POST when a connected miner drops offline
+    "zmq_enabled": True,               # subscribe to BCHN ZMQ hashblock for instant jobs
+    "zmq_block_endpoint": "tcp://bitcoind:28332",  # BCHN ZMQ hashblock endpoint
     "hidden_cards": [],                # dashboard card ids the user has hidden (UI pref)
 }
 
@@ -49,11 +51,13 @@ _ENV = {
     "notify_block": "SOLOBCH_NOTIFY_BLOCK",
     "notify_best_share": "SOLOBCH_NOTIFY_BEST_SHARE",
     "notify_miner_offline": "SOLOBCH_NOTIFY_MINER_OFFLINE",
+    "zmq_enabled": "SOLOBCH_ZMQ",
+    "zmq_block_endpoint": "SOLOBCH_ZMQ_ENDPOINT",
 }
 _INT_KEYS = {"bchn_rpc_port", "stratum_port", "status_port", "share_difficulty",
              "vardiff_target_spm", "vardiff_min", "vardiff_max"}
 _BOOL_KEYS = {"vardiff_enabled", "notify_block", "notify_best_share",
-              "notify_miner_offline"}
+              "notify_miner_offline", "zmq_enabled"}
 
 
 def config_path():

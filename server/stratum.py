@@ -25,6 +25,7 @@ from bch_rpc import BitcoinCashRPC
 from block import block_hash
 from job_manager import (JobManager, EXTRANONCE1_SIZE, EXTRANONCE2_SIZE,
                          COINBASE_TAG, DIFF1_TARGET, target_from_difficulty)
+from history import History
 from stats import Stats
 from status import StatusServer, human_hashrate
 from template import BlockTemplate
@@ -46,6 +47,7 @@ VARDIFF_TICK = 15.0                 # how often the vardiff loop scans workers
 OFFLINE_TICK = 15.0                # how often the offline-miner monitor scans
 OFFLINE_GRACE = 120.0              # a miner must be gone this long before we alert
                                     # (rides out brief internet blips / reconnects)
+HISTORY_TICK = 120.0               # how often to append a point to the hashrate chart
 
 logging.basicConfig(
     level=logging.INFO,
@@ -170,6 +172,7 @@ class ClientConn:
         self.difficulty = None               # this worker's current share difficulty
         self.target = None                   # matching target (set on authorize)
         self._last_vardiff = 0.0             # monotonic ts of last vardiff retarget
+        self.suggested_diff = None           # miner-requested starting difficulty
 
     def _tag(self):
         who = self.worker or f"{self.peer[0]}:{self.peer[1]}"
@@ -216,6 +219,37 @@ class ClientConn:
         self.target = target_from_difficulty(diff)
         await self.send({"id": None, "method": "mining.set_difficulty",
                          "params": [diff]})
+
+    def _clamp_diff(self, diff):
+        """Bound a difficulty to the configured vardiff floor/ceiling."""
+        v = self.jobs.vardiff
+        lo = max(1, v.get("min", 1))
+        hi = max(lo, v.get("max", 4000000))
+        return min(hi, max(lo, diff))
+
+    async def on_suggest_difficulty(self, mid, params):
+        """Honor a miner's mining.suggest_difficulty request (AxeOS sends this).
+
+        The value is clamped to the vardiff floor/ceiling and used as this
+        worker's starting difficulty; vardiff (if on) still re-tunes from there.
+        Previously this was acked but ignored."""
+        d = None
+        if params:
+            try:
+                d = float(params[0])
+            except (TypeError, ValueError):
+                d = None
+        if d and d > 0:
+            self.suggested_diff = self._clamp_diff(d)
+            log.info("%s suggested difficulty %.0f -> using %d",
+                     self._tag(), d, self.suggested_diff)
+            # If the miner suggests after it's already authorized, apply now and
+            # hold off vardiff briefly so its own choice gets a fair trial.
+            if self.authorized:
+                await self.set_difficulty(self.suggested_diff)
+                self._last_vardiff = time.monotonic()
+        if mid is not None:
+            await self.send_result(mid, True)
 
     async def maybe_retarget(self):
         """Vardiff: nudge this worker's difficulty toward the target share rate."""
@@ -328,8 +362,9 @@ class ClientConn:
             await self.on_authorize(mid, params)
         elif method == "mining.submit":
             await self.on_submit(mid, params)
-        elif method in ("mining.extranonce.subscribe", "mining.suggest_difficulty",
-                        "mining.suggest_target"):
+        elif method == "mining.suggest_difficulty":
+            await self.on_suggest_difficulty(mid, params)
+        elif method in ("mining.extranonce.subscribe", "mining.suggest_target"):
             if mid is not None:
                 await self.send_result(mid, True)
         else:
@@ -378,7 +413,9 @@ class ClientConn:
         self.server.evict_stale_duplicates(self)
         self.server.note_miner(self)      # track for the offline monitor
         self.jobs.register(self)
-        await self.set_difficulty(self.jobs.share_difficulty)
+        # Use the miner's suggested difficulty if it sent one (clamped), else the
+        # configured anchor; vardiff (if enabled) re-tunes from this starting point.
+        await self.set_difficulty(self.suggested_diff or self.jobs.share_difficulty)
         await self.send_current_job()
 
     async def on_submit(self, mid, params):
@@ -493,11 +530,14 @@ async def main():
                "target_spm": cfg["vardiff_target_spm"],
                "min": cfg["vardiff_min"], "max": cfg["vardiff_max"]}
     stats = Stats()
+    history = History()
     jobs = JobManager(rpc, cfg["share_difficulty"], POLL_INTERVAL,
                       vardiff=vardiff, webhook_url=cfg["webhook_url"], stats=stats,
                       notify_block=cfg["notify_block"],
                       notify_best_share=cfg["notify_best_share"],
-                      notify_miner_offline=cfg["notify_miner_offline"])
+                      notify_miner_offline=cfg["notify_miner_offline"],
+                      zmq_endpoint=(cfg["zmq_block_endpoint"]
+                                    if cfg["zmq_enabled"] else ""))
 
     server = StratumServer(jobs)
     server.stratum_port = cfg["stratum_port"]
@@ -507,7 +547,7 @@ async def main():
     log.info("Point a NerdQaxe++ at stratum+tcp://<umbrel-ip>:%d  user=<BCH address>.worker",
              cfg["stratum_port"])
 
-    status = StatusServer(server, jobs, STATUS_HOST, cfg["status_port"])
+    status = StatusServer(server, jobs, STATUS_HOST, cfg["status_port"], history)
     await status.start()
     log.info("Status dashboard on http://<umbrel-ip>:%d/  (JSON at /status)",
              cfg["status_port"])
@@ -530,6 +570,17 @@ async def main():
             except Exception as e:
                 log.debug("offline monitor error: %s", e)
 
+    async def history_loop():
+        while True:
+            await asyncio.sleep(HISTORY_TICK)
+            try:
+                clients = list(server.clients)
+                hr = sum(c.window_hashrate(300) for c in clients)
+                sps = sum(c.shares_in(60) for c in clients) / 60.0
+                history.add(hr, sps, len(clients))
+            except Exception as e:
+                log.debug("history sample error: %s", e)
+
     # Flush lifetime stats on a clean shutdown (Umbrel sends SIGTERM with a 1m
     # grace period) so throttled counters land on disk instead of being lost.
     # The handler also trips a stop event so the container exits promptly
@@ -539,6 +590,7 @@ async def main():
 
     def _shutdown():
         stats.flush()
+        history.flush()
         stop_event.set()
 
     try:
@@ -551,6 +603,7 @@ async def main():
     asyncio.create_task(jobs.run())
     asyncio.create_task(vardiff_loop())
     asyncio.create_task(offline_loop())
+    asyncio.create_task(history_loop())
     try:
         async with srv:
             serve_task = asyncio.create_task(srv.serve_forever())
@@ -562,6 +615,7 @@ async def main():
                 pass
     finally:
         stats.flush()
+        history.flush()
 
 
 if __name__ == "__main__":

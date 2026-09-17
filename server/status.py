@@ -5,6 +5,8 @@ SoloBCH Forge - status + config service (stdlib async HTTP).
 Runs on the asyncio loop (reads live state safely, no threads). Routes:
     GET  /            live dashboard
     GET  /status      JSON snapshot (server + node + miners + blocks)
+    GET  /metrics     Prometheus text exposition (for Grafana/Prometheus)
+    GET  /history     persisted hashrate/share time-series (dashboard chart)
     GET  /config      settings page
     GET  /config.json current settings (password redacted)
     POST /config      save settings -> config.json, applied live
@@ -73,6 +75,124 @@ def build_snapshot(server, jobs) -> dict:
         "miners": miners,
         "generated": now,
     }
+
+
+METRICS_CT = "text/plain; version=0.0.4; charset=utf-8"
+
+
+def _mlabel(v) -> str:
+    """Escape a Prometheus label value (backslash, quote, newline)."""
+    return str(v).replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+
+
+def _mnum(x) -> str:
+    """Render a value as a Prometheus sample number (None -> NaN)."""
+    if x is None:
+        return "NaN"
+    if isinstance(x, bool):
+        return "1" if x else "0"
+    if isinstance(x, int):
+        return str(x)
+    try:
+        return repr(float(x))
+    except (TypeError, ValueError):
+        return "NaN"
+
+
+def build_metrics(server, jobs) -> str:
+    """Render the current snapshot in Prometheus text exposition format.
+
+    Reuses build_snapshot so the numbers match the dashboard exactly. Safe to
+    scrape frequently: it only reads already-collected in-memory state.
+    """
+    s = build_snapshot(server, jobs)
+    p, n, srv = s["pool"], s["node"], s["server"]
+    lines = []
+
+    def metric(name, typ, help_, samples):
+        lines.append(f"# HELP {name} {help_}")
+        lines.append(f"# TYPE {name} {typ}")
+        for labels, val in samples:
+            lbl = "{" + labels + "}" if labels else ""
+            lines.append(f"{name}{lbl} {_mnum(val)}")
+
+    metric("solobch_up", "gauge", "1 if the exporter is responding.", [("", 1)])
+    metric("solobch_uptime_seconds", "gauge", "Server process uptime.",
+           [("", srv["uptime_s"])])
+    metric("solobch_stratum_connections", "gauge",
+           "Current open Stratum connections.", [("", srv["connections"])])
+    metric("solobch_workers", "gauge", "Connected workers.", [("", p["workers"])])
+    metric("solobch_hashrate_hps", "gauge",
+           "Pool hashrate (hashes/sec) by averaging window.",
+           [('window="1m"', p["hashrate_1m"]),
+            ('window="5m"', p["hashrate_5m"]),
+            ('window="1h"', p["hashrate_1h"])])
+    metric("solobch_shares_per_second", "gauge",
+           "Accepted shares per second (1m average).", [("", p["shares_per_sec"])])
+    metric("solobch_best_difficulty", "gauge",
+           "All-time best share difficulty.", [("", p["best_diff"])])
+    metric("solobch_shares_accepted_total", "counter",
+           "Lifetime accepted shares (persisted).", [("", p["accepted"])])
+    metric("solobch_shares_rejected_total", "counter",
+           "Lifetime rejected shares (persisted).", [("", p["rejected"])])
+    metric("solobch_session_shares_accepted", "gauge",
+           "Accepted shares since this process started.",
+           [("", p["accepted_session"])])
+    metric("solobch_session_shares_rejected", "gauge",
+           "Rejected shares since this process started.",
+           [("", p["rejected_session"])])
+    metric("solobch_total_hashes", "gauge",
+           "Estimated lifetime hashes computed.", [("", p["total_hashes"])])
+    metric("solobch_lifetime_avg_hps", "gauge",
+           "Lifetime average hashrate (hashes/sec).", [("", p["lifetime_avg_hps"])])
+    metric("solobch_mining_seconds", "gauge",
+           "Accumulated mining time (seconds).", [("", p["mining_seconds"])])
+    metric("solobch_blocks_found_total", "counter",
+           "Blocks found (all-time).", [("", n.get("blocks_found"))])
+    metric("solobch_node_reachable", "gauge",
+           "1 if the BCHN node RPC is reachable.", [("", n.get("node_reachable"))])
+    metric("solobch_node_synced", "gauge",
+           "1 if the node is synced (not in IBD).", [("", n.get("node_ready"))])
+    metric("solobch_node_block_height", "gauge",
+           "Node best block height.", [("", n.get("blocks"))])
+    metric("solobch_network_difficulty", "gauge",
+           "Current BCH network difficulty.", [("", n.get("difficulty"))])
+    metric("solobch_block_reward_sats", "gauge",
+           "Current block reward incl. fees (satoshis).",
+           [("", n.get("coinbase_value"))])
+    metric("solobch_mining_real", "gauge",
+           "1 when serving real templates, 0 when mock (IBD).",
+           [("", 1 if n.get("mode") == "real" else 0)])
+    metric("solobch_share_difficulty", "gauge",
+           "Configured share (vardiff anchor) difficulty.",
+           [("", n.get("share_difficulty"))])
+
+    miners = s["miners"]
+    if miners:
+        def per(key):
+            out = []
+            for m in miners:
+                lbl = (f'worker="{_mlabel(m.get("worker") or "?")}",'
+                       f'ip="{_mlabel(m.get("ip") or "?")}"')
+                out.append((lbl, m.get(key)))
+            return out
+        metric("solobch_miner_hashrate_hps", "gauge",
+               "Per-miner hashrate (5m average).", per("hashrate_hps"))
+        metric("solobch_miner_difficulty", "gauge",
+               "Per-miner current share difficulty.", per("difficulty"))
+        metric("solobch_miner_best_difficulty", "gauge",
+               "Per-miner best share difficulty (session).", per("best_diff"))
+        metric("solobch_miner_shares_accepted", "gauge",
+               "Per-miner accepted shares (session).", per("accepted"))
+        metric("solobch_miner_shares_rejected", "gauge",
+               "Per-miner rejected shares (session).", per("rejected"))
+        metric("solobch_miner_blocks", "gauge",
+               "Per-miner blocks found (all-time).", per("blocks"))
+        metric("solobch_miner_last_share_seconds", "gauge",
+               "Seconds since this miner's last accepted share.",
+               per("last_share_ago"))
+
+    return "\n".join(lines) + "\n"
 
 
 DASHBOARD_HTML = """<!doctype html><html><head><meta charset="utf-8">
@@ -165,6 +285,7 @@ td.empty::before{content:none}
 <div class="stats" id="odds"></div>
 <div class="stats" id="lifetime"></div>
 <div class="panel" id="sparkPanel" hidden><div class="k"><span>Hashrate <span class="dim">(live, this session)</span></span><span id="sparkNow"></span></div><svg id="spark" viewBox="0 0 300 48" preserveAspectRatio="none"></svg></div>
+<div class="panel" id="histPanel" hidden><div class="k"><span>Hashrate history <span class="dim" id="histSpan"></span></span><span id="histMax"></span></div><svg id="histChart" viewBox="0 0 600 120" preserveAspectRatio="none" style="height:120px"></svg></div>
 <div class="cards" id="cards"></div>
 <table><thead><tr><th>Miner</th><th>IP</th><th>Model</th><th>Payout (BCH)</th><th>Hashrate</th>
 <th>Diff</th><th>Best diff</th><th>Blocks</th><th>Accepted</th><th>Rejected</th><th>Last share</th></tr></thead>
@@ -216,6 +337,26 @@ function cp(t){
  toast(ok?'Copied address':'Copy failed — long-press to select');
 }
 function humanTime(s){if(!isFinite(s)||s<=0)return '—';const y=s/31557600;if(y>=1)return y>=1000?(y/1000).toFixed(1)+' <small>k yr</small>':y.toFixed(y>=10?0:1)+' <small>yr</small>';const d=s/86400;if(d>=1)return d.toFixed(d>=10?0:1)+' <small>d</small>';const h=s/3600;if(h>=1)return h.toFixed(1)+' <small>h</small>';return Math.max(1,Math.round(s/60))+' <small>min</small>';}
+function humanSpan(s){s=Math.round(s);const d=Math.floor(s/86400);const h=Math.floor(s%86400/3600);const m=Math.floor(s%3600/60);if(d)return d+'d '+h+'h';if(h)return h+'h '+m+'m';return m+'m';}
+async function drawHistory(){
+ try{
+  const r=await (await fetch('/history')).json();
+  const pts=(r.points||[]).filter(p=>Array.isArray(p)&&p.length>=2);
+  const panel=document.getElementById('histPanel');
+  if(pts.length<2){panel.hidden=true;return;}
+  panel.hidden=false;
+  const hrs=pts.map(p=>p[1]);
+  const mx=Math.max(...hrs)||1,W=600,H=120,pad=6;
+  const X=i=>i/(pts.length-1)*W;
+  const Y=h=>H-pad-(h/mx)*(H-2*pad);
+  const line=pts.map((p,i)=>X(i).toFixed(1)+','+Y(p[1]).toFixed(1)).join(' ');
+  document.getElementById('histChart').innerHTML=
+    '<polygon fill="rgba(63,185,80,.12)" points="0,'+H+' '+line+' '+W+','+H+'"/>'+
+    '<polyline fill="none" stroke="#3fb950" stroke-width="2" points="'+line+'"/>';
+  document.getElementById('histMax').innerHTML='peak '+humanHR(mx);
+  document.getElementById('histSpan').textContent=humanSpan(pts[pts.length-1][0]-pts[0][0]);
+ }catch(e){}
+}
 const hrHist=[];
 function drawSpark(v){
  hrHist.push(v);if(hrHist.length>150)hrHist.shift();
@@ -313,7 +454,7 @@ async function tick(){
 function openDonate(){document.getElementById('donate').hidden=false;}
 function closeDonate(){document.getElementById('donate').hidden=true;}
 document.addEventListener('keydown',function(e){if(e.key==='Escape')closeDonate();});
-loadPrefs().then(()=>{tick();setInterval(tick,2000);});
+loadPrefs().then(()=>{tick();drawHistory();setInterval(tick,2000);setInterval(drawHistory,60000);});
 </script></body></html>"""
 
 
@@ -407,6 +548,12 @@ h2{font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:#8b949e;ma
 <div class="note">Clears all-time best difficulty, lifetime accepted/rejected shares, total hashes and mining time. Found blocks are kept. This cannot be undone.</div>
 <div class="inline"><button id="resetstats" class="alt" style="color:#f85149;border-color:#f85149">Reset lifetime stats</button><span id="resetmsg" class="note"></span></div>
 </div>
+
+<div class="sec">
+<h2>Backup</h2>
+<div class="note">Download these settings as a JSON file, or restore them from one. The RPC password is never included in the export — after importing, re-enter it (or leave it, if you're restoring onto the same node).</div>
+<div class="inline"><button id="exportcfg" class="alt">Export settings</button><button id="importcfg" class="alt">Import settings</button><input id="importfile" type="file" accept="application/json,.json" hidden><span id="backupmsg" class="note"></span></div>
+</div>
 </div>
 </div>
 
@@ -481,16 +628,44 @@ document.getElementById('resetstats').onclick=async()=>{
                      : '<span style="color:#f85149">Failed: '+(r.error||'?')+'</span>';
  }catch(e){m.innerHTML='<span style="color:#f85149">'+e+'</span>';}
 };
+document.getElementById('exportcfg').onclick=async()=>{
+ const m=document.getElementById('backupmsg');
+ try{
+  const c=await (await fetch('/config.json')).json();
+  delete c.bchn_rpc_password;                       // never export the secret
+  const blob=new Blob([JSON.stringify(c,null,2)],{type:'application/json'});
+  const a=document.createElement('a');a.href=URL.createObjectURL(blob);
+  a.download='solobch-forge-config.json';document.body.appendChild(a);a.click();
+  a.remove();URL.revokeObjectURL(a.href);
+  m.innerHTML='<span style="color:#3fb950">Downloaded settings JSON.</span>';
+ }catch(e){m.innerHTML='<span style="color:#f85149">Export failed: '+e+'</span>';}
+};
+document.getElementById('importcfg').onclick=()=>document.getElementById('importfile').click();
+document.getElementById('importfile').onchange=async(ev)=>{
+ const m=document.getElementById('backupmsg');const f=ev.target.files[0];
+ if(!f){return;}
+ try{
+  const data=JSON.parse(await f.text());
+  if(!data||typeof data!=='object')throw new Error('not a settings object');
+  // Load known fields into the form, then Save (reuses validation + live apply).
+  FIELDS.forEach(fld=>{if(data[fld]!=null){const el=document.getElementById(fld);if(el)el.value=BOOL_FIELDS.includes(fld)?String(!!data[fld]):data[fld];}});
+  CHECK_FIELDS.forEach(fld=>{if(data[fld]!=null){const el=document.getElementById(fld);if(el)el.checked=!!data[fld];}});
+  m.innerHTML='<span style="color:#3fb950">Imported — applying…</span>';
+  await save();
+ }catch(e){m.innerHTML='<span style="color:#f85149">Import failed: '+e+'</span>';}
+ ev.target.value='';                                // allow re-importing the same file
+};
 load();
 </script></body></html>"""
 
 
 class StatusServer:
-    def __init__(self, server, jobs, host, port):
+    def __init__(self, server, jobs, host, port, history=None):
         self.server = server
         self.jobs = jobs
         self.host = host
         self.port = port
+        self.history = history
 
     async def start(self):
         return await asyncio.start_server(self._handle, self.host, self.port)
@@ -532,6 +707,17 @@ class StatusServer:
         if path.startswith("/status"):
             out = json.dumps(build_snapshot(self.server, self.jobs), default=str)
             return "200 OK", "application/json", out.encode()
+        if path.startswith("/metrics"):
+            try:
+                out = build_metrics(self.server, self.jobs)
+                return "200 OK", METRICS_CT, out.encode()
+            except Exception as e:
+                return ("500 Internal Server Error",
+                        "text/plain; charset=utf-8", f"# error: {e}\n".encode())
+        if path.startswith("/history"):
+            pts = self.history.snapshot() if self.history else []
+            return ("200 OK", "application/json",
+                    json.dumps({"points": pts}).encode())
         if path.startswith("/config.json"):
             out = json.dumps(config.redacted(config.load()))
             return "200 OK", "application/json", out.encode()
