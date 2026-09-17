@@ -21,16 +21,44 @@ ASIC miner (Stratum V1)  →  SoloBCH Forge  →  Bitcoin Cash Node (JSON-RPC)  
 
 ## Features
 
-- **True solo mining** — no pool, no fees, no shared rewards. You against the network.
+**True solo mining**
+
+- **No pool, no fees, no shared rewards** — you against the network. Find a block and
+  the entire reward is yours.
 - **Address-as-username payouts** — set your miner's Stratum username to your BCH
   address; that address is paid in the coinbase. No server-side wallet, no custody.
 - **Works with common ASICs** — NerdQaxe++ / AxeOS, Bitaxe, and other Stratum V1 miners.
-- **Live dashboard** — node sync status, connected miners, per-worker hashrate and
-  shares, and any blocks found, behind Umbrel's built-in authentication.
-- **Your node, your rules** — connects to your existing Bitcoin Cash Node app; RPC
-  credentials never leave your Umbrel and are never shown in the UI.
-- **Lightweight** — pure-Python, standard-library Stratum server; small multi-arch
-  image (amd64 + arm64), friendly to a Raspberry Pi.
+
+**Zero-config on Umbrel**
+
+- **Automatic node connection** — Umbrel hands the app your Bitcoin Cash Node's RPC
+  address and password. Nothing to copy, nothing shown in the UI.
+- **"Is this working?" diagnostics** — one click checks settings, node, block building,
+  the Stratum port, your miner and its shares, stops at the first problem and suggests
+  a fix.
+
+**Live dashboard** (behind Umbrel's login, mobile-friendly)
+
+- Node sync status, connected miners, per-worker hashrate and shares.
+- Hashrate history chart, all-time best share, and any blocks found.
+- Odds panel — network difficulty, block reward, and your expected time-to-block.
+- Stats persist across restarts and updates; settings can be exported and restored.
+
+**Built for real mining**
+
+- **Vardiff** — per-worker auto difficulty, and honors the miner's own
+  `mining.suggest_difficulty`.
+- **Instant new-block jobs** via the node's ZMQ feed, so miners never hash stale work.
+- **Fresh templates every 30 seconds** so newly arrived fees are included.
+- **Webhook alerts** for block found, new best share, and miner offline.
+- **Prometheus `/metrics`** endpoint plus a ready-made [Grafana dashboard](grafana/).
+
+**Light and safe**
+
+- Pure-Python, standard-library Stratum server; small multi-arch image (amd64 + arm64),
+  friendly to a Raspberry Pi.
+- Stratum port is LAN-only; the node RPC stays on Umbrel's internal network.
+- Runs as a non-root user; no block is ever submitted while the node is syncing.
 
 ## Requirements
 
