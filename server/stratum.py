@@ -25,6 +25,7 @@ import cashaddr
 import config
 from bch_rpc import BitcoinCashRPC
 from block import block_hash
+from diagnostics import Diagnostics, DIAG_WORKER
 from job_manager import (JobManager, EXTRANONCE1_SIZE, EXTRANONCE2_SIZE,
                          COINBASE_TAG, DIFF1_TARGET, target_from_difficulty)
 from history import History
@@ -169,8 +170,10 @@ class StratumServer:
         evict each other on every reconnect. TCP keepalive reaps the rare ghost
         the IP check leaves behind.
         """
+        if keep.internal:
+            return
         for c in list(self.clients):
-            if c is keep or not c.authorized:
+            if c is keep or not c.authorized or c.internal:
                 continue
             same_ip = bool(c.peer and keep.peer and c.peer[0] == keep.peer[0])
             if c.raw_user and c.raw_user == keep.raw_user and same_ip:
@@ -197,6 +200,8 @@ class ClientConn:
         self.extranonce1 = secrets.token_hex(EXTRANONCE1_SIZE)
         self.subscribed = False
         self.authorized = False
+        self.internal = False                # loopback self-test client (diagnostics)
+        self.last_reject = None              # reason of the most recent rejected share
         self.worker = None
         self.model = None
         self.raw_user = None
@@ -243,8 +248,10 @@ class ClientConn:
                      "payout": self.payout_address, "time": time.time()}
             asyncio.create_task(self.jobs.notify_best_diff(entry))
 
-    def _record_reject(self):
+    def _record_reject(self, reason=None):
         self.rejected += 1
+        if reason:
+            self.last_reject = reason
         self.jobs.stats.record_reject()
 
     def window_hashrate(self, window_s):
@@ -497,14 +504,22 @@ class ClientConn:
         self.payout_address = addr_part
         self.worker = worker
         self.raw_user = f"{addr_part}.{worker}"     # normalized identity
+        # The diagnostics self-test connects from loopback with a fixed worker
+        # label; it must not show up as a miner or trigger offline alerts.
+        self.internal = (worker == DIAG_WORKER and bool(self.peer)
+                         and self.peer[0] in ("127.0.0.1", "::1"))
         self.authorized = True
         await self.send_result(mid, True)
-        log.info("%s authorized — payout %s", self._tag(), self.payout_address)
-        # A reconnect (e.g. after an internet drop) leaves the old, now-dead
-        # connection lingering until its socket times out. Now that this fresh
-        # one is authorized, evict that stale twin so it can't duplicate the row.
-        self.server.evict_stale_duplicates(self)
-        self.server.note_miner(self)      # track for the offline monitor
+        if self.internal:
+            log.info("%s diagnostics self-test client authorized", self._tag())
+        else:
+            log.info("%s authorized — payout %s", self._tag(), self.payout_address)
+            # A reconnect (e.g. after an internet drop) leaves the old, now-dead
+            # connection lingering until its socket times out. Now that this
+            # fresh one is authorized, evict that stale twin so it can't
+            # duplicate the row.
+            self.server.evict_stale_duplicates(self)
+            self.server.note_miner(self)  # track for the offline monitor
         self.jobs.register(self)
         # Start from the configured share difficulty. With vardiff on, a
         # difficulty the miner suggested (clamped) is used instead and vardiff
@@ -532,7 +547,7 @@ class ClientConn:
             return
         src = self.jobs.get_source(job_id)
         if src is None:
-            self._record_reject()
+            self._record_reject("Job not found (stale)")
             log.info("%s REJECT stale/unknown job %s", self._tag(), job_id[:16])
             await self.send_result(mid, None, [21, "Job not found (stale)", None])
             return
@@ -552,7 +567,7 @@ class ClientConn:
             # could never be valid, so enforce the same window here.
             if (ntime_int < src.mintime
                     or ntime_int > int(time.time()) + NTIME_FUTURE_SLACK):
-                self._record_reject()
+                self._record_reject("ntime out of range")
                 log.info("%s REJECT ntime %d outside [%d, now+%ds]", self._tag(),
                          ntime_int, src.mintime, NTIME_FUTURE_SLACK)
                 await self.send_result(mid, None, [20, "ntime out of range", None])
@@ -585,7 +600,7 @@ class ClientConn:
                 del self.seen_shares[old]
             seen = self.seen_shares[job_id] = set()
         if key in seen:
-            self._record_reject()
+            self._record_reject("Duplicate share")
             await self.send_result(mid, None, [22, "Duplicate share", None])
             return
         if len(seen) >= MAX_SHARES_PER_JOB:
@@ -629,7 +644,7 @@ class ClientConn:
                          self._tag(), job_id, share_diff, hash_be[:24],
                          human_hashrate(self.window_hashrate(300)))
         else:
-            self._record_reject()
+            self._record_reject("Low difficulty share")
             await self.send_result(mid, None, [23, "Low difficulty share", None])
 
     async def _submit_block(self, src, coinbase_raw, header, hash_be, job_id):
@@ -686,7 +701,9 @@ async def main():
     log.info("Point a NerdQaxe++ at stratum+tcp://<umbrel-ip>:%d  user=<BCH address>.worker",
              cfg["stratum_port"])
 
-    status = StatusServer(server, jobs, STATUS_HOST, cfg["status_port"], history)
+    diag = Diagnostics(server, jobs, cfg["stratum_port"])
+    status = StatusServer(server, jobs, STATUS_HOST, cfg["status_port"], history,
+                          diag=diag)
     await status.start()
     log.info("Status dashboard on http://<umbrel-ip>:%d/  (JSON at /status)",
              cfg["status_port"])
@@ -713,7 +730,7 @@ async def main():
         while True:
             await asyncio.sleep(HISTORY_TICK)
             try:
-                clients = list(server.clients)
+                clients = [c for c in server.clients if not c.internal]
                 hr = sum(c.window_hashrate(300) for c in clients)
                 sps = sum(c.shares_in(60) for c in clients) / 60.0
                 history.add(hr, sps, len(clients))

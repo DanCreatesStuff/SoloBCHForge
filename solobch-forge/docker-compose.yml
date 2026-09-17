@@ -11,7 +11,7 @@ services:
     # Public multi-arch image pushed to GHCR (see .github/workflows/docker-publish.yml).
     # Best practice: after the first CI build, swap the tag for the digest it prints:
     #   image: ghcr.io/dancreatesstuff/solobch-forge@sha256:<digest>
-    image: ghcr.io/dancreatesstuff/solobch-forge:1.1.1
+    image: ghcr.io/dancreatesstuff/solobch-forge:1.1.2
     # Umbrel owns the app's data dir as UID 1000, so run as 1000:1000 (the image's
     # baked-in user is a different UID and cannot write to /data). The shipped
     # data/ folder is copied in 1000-owned on install so this works on a fresh box.

@@ -2,7 +2,7 @@ manifestVersion: 1
 id: solobch-forge
 category: bitcoin
 name: SoloBCH Forge
-version: "1.1.1"
+version: "1.1.2"
 tagline: Solo mine Bitcoin Cash to your own BCHN node
 icon: https://cdn.jsdelivr.net/gh/DanCreatesStuff/SoloBCHForge@main/solobch-forge/icon.svg
 description: >-
@@ -35,12 +35,12 @@ gallery:
 path: ""
 defaultPassword: ""
 releaseNotes: >-
-  Reliability and security release. Fixes a case where a slow node response
-  could leave miners working on an already-solved block until the next one;
-  templates are now also refreshed every 30 seconds so new transaction fees are
-  included. The ZMQ instant-job feed now connects correctly on Umbrel. Hardens
-  the dashboard and settings API (input escaping, POST-only actions, settings
-  validation), bounds memory use over long sessions, stops rigs sharing a
-  username from evicting each other, and makes restarts prompt.
+  New "Is this working?" button at the top of Settings: runs a step-by-step
+  check of your whole setup (settings, node, block building, Stratum port, your
+  miner and its shares), stops at the first problem and shows a potential fix.
+  Includes the 1.1.1 reliability and security fixes: recovery from slow node
+  responses, 30-second template refreshes so new fees are included, a working
+  ZMQ instant-job feed on Umbrel, hardened dashboard and settings API, bounded
+  memory over long sessions, and prompt restarts.
 submitter: DanCreatesStuff
 submission: https://github.com/DanCreatesStuff/SoloBCHForge

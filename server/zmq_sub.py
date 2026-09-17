@@ -18,6 +18,7 @@ latency optimisation that fails safe.
 import asyncio
 import logging
 import struct
+import time
 
 log = logging.getLogger("solobch.zmq")
 
@@ -87,7 +88,7 @@ async def _read_frame(reader):
     return flags, body
 
 
-async def _run_once(host, port, topic, on_message):
+async def _run_once(host, port, topic, on_message, on_connect=None):
     """One connection lifetime: handshake, subscribe, then receive until close."""
     reader, writer = await asyncio.open_connection(host, port)
     try:
@@ -102,6 +103,8 @@ async def _run_once(host, port, topic, on_message):
         await writer.drain()
         log.info("ZMQ connected %s:%d, subscribed to %r",
                  host, port, topic.decode("ascii", "replace"))
+        if on_connect:
+            on_connect()
 
         # --- receive loop: reassemble multipart, dispatch matching topic ---
         parts = []
@@ -127,25 +130,35 @@ async def _run_once(host, port, topic, on_message):
             pass
 
 
-async def watch_hashblock(endpoint, on_block, topic=b"hashblock"):
+async def watch_hashblock(endpoint, on_block, topic=b"hashblock", state=None):
     """Connect to a BCHN ZMQ endpoint and call on_block() for each new block.
 
     Runs forever (until cancelled), reconnecting with exponential backoff. All
-    failures are non-fatal: the job manager keeps polling regardless.
+    failures are non-fatal: the job manager keeps polling regardless. If a
+    `state` dict is given it is kept updated with connected / error /
+    last_block so the dashboard and diagnostics can report the feed's health.
     """
+    if state is None:
+        state = {}
+    state.update(connected=False, error=None, last_block=None)
     try:
         host, port = _parse_endpoint(endpoint)
     except Exception as e:
         log.warning("ZMQ disabled - bad endpoint %r: %s", endpoint, e)
+        state["error"] = f"bad endpoint: {e}"
         return
 
     backoff = _RECONNECT_MIN
     warned = False
 
+    def _on_connect():
+        state.update(connected=True, error=None)
+
     def _on_message(parts):
         nonlocal backoff, warned
         backoff = _RECONNECT_MIN                       # healthy connection
         warned = False
+        state["last_block"] = time.time()
         try:
             on_block()
         except Exception as e:
@@ -153,11 +166,14 @@ async def watch_hashblock(endpoint, on_block, topic=b"hashblock"):
 
     while True:
         try:
-            await _run_once(host, port, topic, _on_message)
+            await _run_once(host, port, topic, _on_message, _on_connect)
             backoff = _RECONNECT_MIN
+            state.update(connected=False, error="connection closed by peer")
         except asyncio.CancelledError:
+            state["connected"] = False
             raise
         except Exception as e:
+            state.update(connected=False, error=str(e) or e.__class__.__name__)
             if not warned:
                 log.warning("ZMQ %s:%d unavailable (%s) - retrying quietly; "
                             "poll fallback active", host, port, e)

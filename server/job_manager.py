@@ -118,6 +118,9 @@ class JobManager:
                                    "min": 128, "max": 4000000}
         self.webhook_url = webhook_url
         self.zmq_endpoint = zmq_endpoint
+        # Health of the ZMQ feed, maintained by the watcher (connected / error /
+        # last_block) for the status snapshot and the diagnostics page.
+        self.zmq_state = {"connected": False, "error": None, "last_block": None}
         # Set by the ZMQ hashblock watcher (if any) to wake the poll loop early
         # when a new block lands, instead of waiting out poll_interval.
         self._wake = asyncio.Event()
@@ -346,7 +349,7 @@ class JobManager:
         if self.zmq_endpoint:
             from zmq_sub import watch_hashblock
             watcher = asyncio.create_task(
-                watch_hashblock(self.zmq_endpoint, self.poke))
+                watch_hashblock(self.zmq_endpoint, self.poke, state=self.zmq_state))
             log.info("job manager: ZMQ hashblock push on %s (poll every %.1fs "
                      "as fallback, share diff %s)",
                      self.zmq_endpoint, self.poll_interval, self.share_difficulty)
@@ -477,6 +480,7 @@ class JobManager:
             "coinbase_value": getattr(self.current_source, "coinbasevalue", None),
             "share_difficulty": self.share_difficulty,
             "vardiff": self.vardiff,
+            "zmq": dict(self.zmq_state, endpoint=self.zmq_endpoint),
             "current_job": job,
             "blocks_found": len(self.blocks_found),
             "recent_blocks": self.blocks_found[-5:][::-1],

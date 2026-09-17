@@ -14,6 +14,8 @@ Runs on the asyncio loop (reads live state safely, no threads). Routes:
     POST /test-webhook  send a test alert to the saved webhook
     POST /reset-stats   zero lifetime counters (found blocks are kept)
     GET/POST /ui-prefs  dashboard card layout
+    GET  /diag          progress/result of the "Is this working?" checks
+    POST /diag/start, /diag/stop   run / abort those checks
 
 NEVER returns the RPC password. In the Umbrel app this is behind app_proxy auth.
 Every state-changing route is POST-only and requires Content-Type:
@@ -50,7 +52,8 @@ def human_hashrate(hps: float) -> str:
 
 def build_snapshot(server, jobs) -> dict:
     now = time.time()
-    clients = list(server.clients)
+    # The diagnostics self-test client is internal plumbing, not a miner.
+    clients = [c for c in server.clients if not getattr(c, "internal", False)]
     miners = [c.stats_snapshot(now) for c in clients]
 
     def sum_hr(w):
@@ -515,9 +518,32 @@ h2{font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:#8b949e;ma
 .switch input:focus-visible+.slider{outline:2px solid #58a6ff;outline-offset:2px}
 #save{width:100%;margin-top:16px}
 #msg{margin-top:14px}
+.diag{list-style:none;padding:0;margin:12px 0 0}
+.diag li{display:flex;gap:10px;align-items:flex-start;padding:7px 0;border-bottom:1px solid #21262d;font-size:13px}
+.diag li:last-child{border-bottom:none}
+.diag .ic{flex:none;width:20px;text-align:center;font-weight:700}
+.diag .nm{flex:none;width:230px;max-width:45%;color:#e6edf3}
+.diag .dt{color:#8b949e;min-width:0;word-break:break-word}
+.diag li.pass .ic{color:#3fb950}.diag li.fail .ic{color:#f85149}.diag li.warn .ic{color:#d29922}
+.diag li.running .ic{color:#58a6ff}.diag li.skip .ic,.diag li.pending .ic{color:#484f58}
+.diag li.skip .nm,.diag li.pending .nm{color:#8b949e}
+.diagbox{margin-top:12px;padding:12px 14px;border-radius:8px;border:1px solid;font-size:13px;line-height:1.5;color:#e6edf3}
+.diagbox.bad{border-color:#f85149;background:rgba(248,81,73,.08)}
+.diagbox.warn{border-color:#d29922;background:rgba(210,153,34,.08)}
+.diagbox b{display:block;margin-bottom:2px}
+.diagbox p{margin:6px 0 0}
 </style></head><body>
 <header><h1>SoloBCH <span>Forge</span> · Settings</h1><a class="btn" href="/">&#8592; Dashboard</a></header>
 <div class="wrap">
+<div class="sec">
+<h2>Is this working?</h2>
+<div class="note">Checks the whole chain step by step: settings, the node, block building, the Stratum port, your miner and its shares. It stops at the first problem and shows a potential fix. Takes a few seconds, or up to about five minutes while it waits for your miner and its shares.</div>
+<div class="inline"><button id="diagrun" class="alt">Run checks</button><button id="diagstop" class="alt" hidden>Stop</button><span id="diagmsg" class="note"></span></div>
+<ol id="diaglist" class="diag" hidden></ol>
+<div id="diagerr" class="diagbox bad" hidden></div>
+<div id="diagwarn" class="diagbox warn" hidden></div>
+</div>
+
 <div class="grid">
 <div class="col">
 <div class="sec">
@@ -682,6 +708,46 @@ document.getElementById('importfile').onchange=async(ev)=>{
  }catch(e){m.innerHTML='<span style="color:#f85149">Import failed: '+e+'</span>';}
  ev.target.value='';                                // allow re-importing the same file
 };
+// ---- "Is this working?" diagnostics ------------------------------------
+function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+const DIAG_ICON={pending:'&#9675;',running:'&#8987;',pass:'&#10003;',warn:'!',fail:'&#10007;',skip:'&ndash;'};
+let diagTimer=null;
+function renderDiag(d){
+ const list=document.getElementById('diaglist');list.hidden=false;
+ const checks=d.checks||[];
+ list.innerHTML=checks.map(c=>'<li class="'+esc(c.status)+'"><span class="ic">'+(DIAG_ICON[c.status]||'?')+'</span><span class="nm">'+esc(c.name)+'</span><span class="dt">'+esc(c.detail||'')+'</span></li>').join('');
+ const msg=document.getElementById('diagmsg'),el=Math.round(d.elapsed||0);
+ const warns=checks.filter(c=>c.status==='warn');
+ const eb=document.getElementById('diagerr'),wb=document.getElementById('diagwarn');
+ if(d.running){msg.textContent='running… '+el+'s';}
+ else if(d.result==='pass'){msg.innerHTML='<span style="color:#3fb950">Everything is working'+(warns.length?' ('+warns.length+' warning'+(warns.length>1?'s':'')+' below)':'')+' &middot; '+el+'s</span>';}
+ else if(d.result==='fail'){msg.innerHTML='<span style="color:#f85149">Stopped at: '+esc(d.error&&d.error.check||'?')+'</span>';}
+ else if(d.result==='stopped'){msg.textContent='stopped';}
+ else msg.textContent='';
+ if(d.error&&!d.running){eb.hidden=false;eb.innerHTML='<b>Problem &mdash; '+esc(d.error.check)+'</b>'+esc(d.error.detail)+'<p><b>Potential fix</b>'+esc(d.error.fix)+'</p>';}
+ else eb.hidden=true;
+ if(warns.length&&!d.running){wb.hidden=false;wb.innerHTML=warns.map(c=>'<b>Warning &mdash; '+esc(c.name)+'</b>'+esc(c.detail)+(c.fix?'<p>'+esc(c.fix)+'</p>':'')).join('<br>');}
+ else wb.hidden=true;
+ document.getElementById('diagrun').disabled=!!d.running;
+ document.getElementById('diagstop').hidden=!d.running;
+}
+async function pollDiag(){
+ try{const d=await (await fetch('/diag')).json();renderDiag(d);
+  if(!d.running&&diagTimer){clearInterval(diagTimer);diagTimer=null;}
+ }catch(e){}
+}
+document.getElementById('diagrun').onclick=async()=>{
+ const m=document.getElementById('diagmsg');m.textContent='starting…';
+ try{const r=await postJSON('/diag/start');
+  if(!r.ok){m.textContent='could not start: '+(r.error||'?');return;}
+  if(!diagTimer)diagTimer=setInterval(pollDiag,1000);
+  pollDiag();
+ }catch(e){m.textContent='request failed: '+e;}
+};
+document.getElementById('diagstop').onclick=async()=>{try{await postJSON('/diag/stop');pollDiag();}catch(e){}};
+(async()=>{try{const d=await (await fetch('/diag')).json();
+ if(d.started){renderDiag(d);if(d.running&&!diagTimer)diagTimer=setInterval(pollDiag,1000);}
+}catch(e){}})();
 load();
 </script></body></html>"""
 
@@ -759,12 +825,13 @@ def validate_updates(updates, current):
 
 
 class StatusServer:
-    def __init__(self, server, jobs, host, port, history=None):
+    def __init__(self, server, jobs, host, port, history=None, diag=None):
         self.server = server
         self.jobs = jobs
         self.host = host
         self.port = port
         self.history = history
+        self.diag = diag
         self._active = 0
 
     async def start(self):
@@ -852,12 +919,18 @@ class StatusServer:
             return _json("200 OK", out)
         if path.startswith("/ui-prefs") and method != "POST":
             return self._get_ui_prefs()
+        if path.startswith("/diag") and method != "POST":
+            if self.diag is None:
+                return _json("503 Service Unavailable",
+                             {"ok": False, "error": "diagnostics unavailable"})
+            return _json("200 OK", self.diag.snapshot())
         if path.startswith("/config") and not path.startswith("/config.json") \
                 and method != "POST":
             return "200 OK", "text/html; charset=utf-8", CONFIG_HTML.encode()
 
         # --- state-changing routes: POST + JSON content type only ----------- #
-        mutating = ("/test-rpc", "/test-webhook", "/reset-stats", "/ui-prefs", "/config")
+        mutating = ("/test-rpc", "/test-webhook", "/reset-stats", "/ui-prefs", "/config",
+                    "/diag/start", "/diag/stop")
         if path.startswith(mutating):
             if method != "POST":
                 return _json("405 Method Not Allowed",
@@ -877,6 +950,17 @@ class StatusServer:
                 return self._reset_stats()
             if path.startswith("/ui-prefs"):
                 return self._save_ui_prefs(body)
+            if path.startswith("/diag/"):
+                if self.diag is None:
+                    return _json("503 Service Unavailable",
+                                 {"ok": False, "error": "diagnostics unavailable"})
+                if path.startswith("/diag/start"):
+                    if self.diag.start():
+                        return _json("200 OK", {"ok": True})
+                    return _json("409 Conflict",
+                                 {"ok": False, "error": "checks are already running"})
+                self.diag.stop()
+                return _json("200 OK", {"ok": True})
             return self._save_config(body)
         return "200 OK", "text/html; charset=utf-8", DASHBOARD_HTML.encode()
 
