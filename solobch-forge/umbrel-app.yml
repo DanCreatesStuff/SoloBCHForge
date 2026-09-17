@@ -2,7 +2,7 @@ manifestVersion: 1
 id: solobch-forge
 category: bitcoin
 name: SoloBCH Forge
-version: "1.1.0"
+version: "1.1.1"
 tagline: Solo mine Bitcoin Cash to your own BCHN node
 icon: https://cdn.jsdelivr.net/gh/DanCreatesStuff/SoloBCHForge@main/solobch-forge/icon.svg
 description: >-
@@ -35,10 +35,12 @@ gallery:
 path: ""
 defaultPassword: ""
 releaseNotes: >-
-  Adds a hashrate history chart to the dashboard and near-instant job updates by
-  subscribing to the node's ZMQ block feed (falls back to polling automatically).
-  New Prometheus /metrics endpoint with a ready-made Grafana dashboard, settings
-  backup (export/import), and the server now honors your miner's suggested
-  difficulty.
+  Reliability and security release. Fixes a case where a slow node response
+  could leave miners working on an already-solved block until the next one;
+  templates are now also refreshed every 30 seconds so new transaction fees are
+  included. The ZMQ instant-job feed now connects correctly on Umbrel. Hardens
+  the dashboard and settings API (input escaping, POST-only actions, settings
+  validation), bounds memory use over long sessions, stops rigs sharing a
+  username from evicting each other, and makes restarts prompt.
 submitter: DanCreatesStuff
 submission: https://github.com/DanCreatesStuff/SoloBCHForge
