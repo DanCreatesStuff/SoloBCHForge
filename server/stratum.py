@@ -15,6 +15,7 @@ Standard library only. RPC credentials come from the environment (bch_rpc).
 import asyncio
 import json
 import logging
+import os
 import re
 import secrets
 import socket
@@ -29,7 +30,7 @@ from diagnostics import Diagnostics, DIAG_WORKER
 from job_manager import (JobManager, EXTRANONCE1_SIZE, EXTRANONCE2_SIZE,
                          COINBASE_TAG, DIFF1_TARGET, target_from_difficulty)
 from history import History
-from stats import Stats
+from stats import Stats, stats_path
 from status import StatusServer, human_hashrate
 from template import BlockTemplate
 
@@ -54,6 +55,14 @@ HISTORY_TICK = 120.0               # how often to append a point to the hashrate
 AUTH_TIMEOUT = 60.0                # drop a connection that never authorizes (slot hogging)
 NTIME_FUTURE_SLACK = 7200          # node rule: block time <= network time + 2h
 MAX_SHARES_PER_JOB = 200_000       # per-connection dedupe cap per job (flood guard)
+DIFF_CHANGE_GRACE = 15.0           # s a share may still meet the pre-change difficulty
+MAX_PAYOUTS_PER_JOB = 4            # distinct payouts remembered per job per connection
+# A block candidate whose submitblock fails in transport (node restarting,
+# timeout, network blip) is retried in the background after each of these
+# delays (~4 min in total) before it is given up as "submit failed". It stays
+# saved on disk either way.
+SUBMIT_RETRY_DELAYS = (2, 5, 10, 20, 30, 60, 60, 60)
+BLOCK_DIR = "blocks"               # candidates saved under <data dir>/blocks/
 MAX_WORKER_LEN = 32
 MAX_MODEL_LEN = 48
 # Worker names and miner model strings come from the unauthenticated Stratum
@@ -74,6 +83,28 @@ def _sanitize_label(value, max_len):
     if not isinstance(value, str):
         return ""
     return _LABEL_BAD.sub("", value.strip())[:max_len]
+
+
+def save_block_candidate(record):
+    """Write a block candidate, full block hex included, to <data dir>/blocks/
+    BEFORE it is submitted, so a block whose submit fails can still be replayed
+    by hand (`bitcoin-cli submitblock <block_hex>`). Returns the file path, or
+    None when there is no persistent data dir or the write failed."""
+    base = os.path.dirname(stats_path())
+    if not base:
+        return None
+    try:
+        folder = os.path.join(base, BLOCK_DIR)
+        os.makedirs(folder, exist_ok=True)
+        path = os.path.join(folder, f"{record['height']}-{record['hash']}.json")
+        tmp = path + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(record, f, indent=2)
+        os.replace(tmp, path)
+        return path
+    except Exception as e:
+        log.error("could not save block candidate %s: %s", record.get("hash"), e)
+        return None
 
 
 def _enable_keepalive(sock):
@@ -101,6 +132,9 @@ class StratumServer:
         # miners that have connected so the offline monitor can alert when one that
         # was mining drops off and stays gone. RAM-only; not persisted.
         self.seen_miners = {}
+        # Background submitblock retries. Held here so the tasks are not
+        # garbage-collected, and outlive the connection that found the block.
+        self.submit_tasks = set()
 
     async def handle(self, reader, writer):
         if len(self.clients) >= MAX_CONNECTIONS:
@@ -197,7 +231,12 @@ class ClientConn:
         sock = writer.get_extra_info("socket")
         if sock is not None:
             _enable_keepalive(sock)
+        # Unique among live connections, so two miners paying the same address
+        # are never handed identical coinbases (identical, wasted work).
+        in_use = {c.extranonce1 for c in server.clients}
         self.extranonce1 = secrets.token_hex(EXTRANONCE1_SIZE)
+        while self.extranonce1 in in_use:
+            self.extranonce1 = secrets.token_hex(EXTRANONCE1_SIZE)
         self.subscribed = False
         self.authorized = False
         self.internal = False                # loopback self-test client (diagnostics)
@@ -212,6 +251,11 @@ class ClientConn:
         # per job so the sets of jobs that leave the manager's history can be
         # dropped, bounding memory over a months-long session.
         self.seen_shares = {}
+        # job_id -> [(payout_script, payout_address), ...] this connection was
+        # actually sent that job with. A share is rebuilt from these, not from
+        # whatever address the connection holds now, so a re-authorize with a
+        # different address cannot change the coinbase of work already out.
+        self.job_payouts = {}
         self.connected_wall = time.time()
         self.connected_mono = time.monotonic()
         self.accepted = 0
@@ -221,7 +265,12 @@ class ClientConn:
         self._shares = deque()               # (monotonic_ts, assigned_share_difficulty)
         self.difficulty = None               # this worker's current share difficulty
         self.target = None                   # matching target (set on authorize)
-        self._last_vardiff = 0.0             # monotonic ts of last vardiff retarget
+        # The difficulty before the last change, honoured for DIFF_CHANGE_GRACE
+        # seconds so shares already in flight are not rejected by a raise.
+        self._prev_difficulty = None
+        self._prev_target = None
+        self._diff_changed = 0.0
+        self._last_vardiff = 0.0            # monotonic ts of last vardiff retarget
         self.suggested_diff = None           # miner-requested starting difficulty
 
     def _tag(self):
@@ -267,6 +316,9 @@ class ClientConn:
     async def set_difficulty(self, diff):
         """Set this worker's share difficulty and notify the miner."""
         diff = max(1, int(round(diff)))
+        if self.difficulty is not None and diff != self.difficulty:
+            self._prev_difficulty, self._prev_target = self.difficulty, self.target
+            self._diff_changed = time.monotonic()
         self.difficulty = diff
         self.target = target_from_difficulty(diff)
         await self.send({"id": None, "method": "mining.set_difficulty",
@@ -363,6 +415,16 @@ class ClientConn:
     async def send_result(self, mid, result, error=None):
         await self.send({"id": mid, "result": result, "error": error})
 
+    def _remember_payout(self, job_id):
+        """Record that `job_id` went out paying the current payout script."""
+        for old in [j for j in self.job_payouts if self.jobs.get_source(j) is None]:
+            del self.job_payouts[old]
+        payouts = self.job_payouts.setdefault(job_id, [])
+        pair = (self.payout_script, self.payout_address)
+        if pair not in payouts:
+            payouts.append(pair)
+            del payouts[:-MAX_PAYOUTS_PER_JOB]
+
     async def send_current_job(self):
         jm = self.jobs
         src = jm.current_source
@@ -375,6 +437,7 @@ class ClientConn:
             c1, c2 = src.coinb1_coinb2(self.payout_script, EXTRANONCE1_SIZE,
                                        EXTRANONCE2_SIZE, COINBASE_TAG)
             params = src.notify_params(jid, c1, c2, jm.current_clean)
+            self._remember_payout(jid)
         else:
             params = src.notify_params(jid, jm.current_clean)
         await self.send({"id": None, "method": "mining.notify", "params": params})
@@ -573,25 +636,40 @@ class ClientConn:
                 await self.send_result(mid, None, [20, "ntime out of range", None])
                 return
 
-        # Version rolling: combine base version with masked rolled bits (6th param).
+        payouts = None
+        if isinstance(src, BlockTemplate):
+            # Rebuild from the payout(s) this job was actually sent with.
+            payouts = self.job_payouts.get(job_id)
+            if not payouts:
+                self._record_reject("Job not found (stale)")
+                log.info("%s REJECT job %s was never sent to this connection",
+                         self._tag(), job_id[:16])
+                await self.send_result(mid, None, [21, "Job not found (stale)", None])
+                return
+
+        # Version rolling (BIP310), rolled bits in the 6th param. The spec
+        # combines them as (base & ~mask) | (bits & mask); ESP-Miner firmware
+        # sends base ^ rolled instead. The two agree whenever the base version
+        # has no bits inside the mask (BCHN's 0x20000000), so both are only
+        # tried when they differ.
         base_ver = src.version if isinstance(src.version, int) else int(src.version, 16)
         rolled = params[5] if len(params) > 5 else None
+        versions, rolled_bits = [base_ver], 0
         if rolled is not None and self.version_mask:
             mask = int(self.version_mask, 16)
             try:
-                rolled_int = int(rolled, 16)
+                rolled_bits = int(rolled, 16) & mask
             except (TypeError, ValueError):
                 self._record_reject()
                 await self.send_result(mid, None, [20, "Bad version bits", None])
                 return
-            ver_int = (base_ver & ~mask) | (rolled_int & mask)
-        else:
-            ver_int = base_ver
-        version_hex = f"{ver_int:08x}"
+            versions = [(base_ver & ~mask) | rolled_bits]
+            if base_ver ^ rolled_bits != versions[0]:
+                versions.append(base_ver ^ rolled_bits)
 
         # Duplicate detection, keyed per job. Rolled version bits are part of the
         # identity: the same nonce under different version bits is distinct work.
-        key = (en2, ntime, nonce, version_hex)
+        key = (en2, ntime, nonce, rolled_bits)
         seen = self.seen_shares.get(job_id)
         if seen is None:
             # First share on a new job: drop the sets of jobs the manager has
@@ -608,65 +686,188 @@ class ClientConn:
             seen.clear()
         seen.add(key)
 
-        coinbase_raw = header = None
+        # Rebuild every candidate header (normally exactly one: one payout, one
+        # version). Only the hashing can fail on bad input, so it is the only
+        # part inside the try: nothing after the block check can skip a submit.
+        cands = []                 # (hash, header, coinbase_raw, payout_address, version)
         try:
-            if isinstance(src, BlockTemplate):
-                c1, c2 = src.coinb1_coinb2(self.payout_script, EXTRANONCE1_SIZE,
-                                           EXTRANONCE2_SIZE, COINBASE_TAG)
-                coinbase_raw, cb_hash = src.coinbase(c1, self.extranonce1, en2, c2)
-                header = src.header(cb_hash, ver_int, ntime_int, nonce_int)
-                hh = block_hash(header)
-                is_block = int.from_bytes(hh, "little") <= src.target
+            if payouts is not None:
+                for script, address in reversed(payouts):          # newest first
+                    c1, c2 = src.coinb1_coinb2(script, EXTRANONCE1_SIZE,
+                                               EXTRANONCE2_SIZE, COINBASE_TAG)
+                    coinbase_raw, cb_hash = src.coinbase(c1, self.extranonce1, en2, c2)
+                    for v in versions:
+                        header = src.header(cb_hash, v, ntime_int, nonce_int)
+                        cands.append((block_hash(header), header, coinbase_raw,
+                                      address, v))
             else:
-                hh = src.build_header_hash(self.extranonce1, en2, ntime, nonce,
-                                           version_hex)
-                is_block = False
-            hval = int.from_bytes(hh, "little")
-            meets_share = hval <= self.target
-            share_diff = DIFF1_TARGET / hval if hval else 0.0
-            hash_be = hh[::-1].hex()
+                for v in versions:
+                    cands.append((src.build_header_hash(self.extranonce1, en2, ntime,
+                                                        nonce, f"{v:08x}"),
+                                  None, None, None, v))
         except Exception as e:
             self._record_reject()
             log.warning("%s REJECT unparseable submit: %s", self._tag(), e)
             await self.send_result(mid, None, [20, "Bad share encoding", None])
             return
 
-        if is_block:
-            await self._submit_block(src, coinbase_raw, header, hash_be, job_id)
+        # The reconstruction that matches the miner's work is the one whose hash
+        # is low; a mismatched one hashes to a random value.
+        hh, header, coinbase_raw, payout, ver_int = min(
+            cands, key=lambda c: int.from_bytes(c[0], "little"))
+        hval = int.from_bytes(hh, "little")
+        is_block = payouts is not None and hval <= src.target
+        share_diff = DIFF1_TARGET / hval if hval else 0.0
+        hash_be = hh[::-1].hex()
 
-        if meets_share or is_block:
-            self._record_accept(share_diff, self.difficulty)
+        if is_block:
+            await self._submit_block(src, coinbase_raw, header, hash_be, job_id,
+                                     payout, {
+                "extranonce1": self.extranonce1, "extranonce2": en2,
+                "ntime": ntime, "nonce": nonce, "version": f"{ver_int:08x}",
+                "hash_diff": share_diff, "share_diff": self.difficulty})
+
+        # A difficulty change reaches the miner while shares found at the old
+        # one are still in flight: honour the previous target briefly.
+        assigned = self.difficulty
+        meets_share = hval <= self.target
+        if (not meets_share and self._prev_target is not None
+                and time.monotonic() - self._diff_changed < DIFF_CHANGE_GRACE
+                and hval <= self._prev_target):
+            meets_share, assigned = True, self._prev_difficulty
+
+        if is_block:
+            self._record_accept(share_diff, assigned)
             await self.send_result(mid, True)
-            if is_block:
-                log.warning("%s BLOCK SHARE job=%s hash=%s", self._tag(), job_id, hash_be)
-            else:
-                log.info("%s ACCEPT share job=%s diff=%.0f hash=%s… (%s)",
-                         self._tag(), job_id, share_diff, hash_be[:24],
-                         human_hashrate(self.window_hashrate(300)))
+            log.warning("%s BLOCK SHARE job=%s hash=%s", self._tag(), job_id, hash_be)
+        elif self.jobs.is_stale(src):
+            # Work on a chain tip that has been replaced is worthless.
+            self._record_reject("Stale share")
+            log.info("%s REJECT stale share on job %s (tip changed)", self._tag(),
+                     job_id)
+            await self.send_result(mid, None, [21, "Stale share", None])
+        elif meets_share:
+            self._record_accept(share_diff, assigned)
+            await self.send_result(mid, True)
+            log.info("%s ACCEPT share job=%s diff=%.0f hash=%s… (%s)",
+                     self._tag(), job_id, share_diff, hash_be[:24],
+                     human_hashrate(self.window_hashrate(300)))
         else:
             self._record_reject("Low difficulty share")
             await self.send_result(mid, None, [23, "Low difficulty share", None])
 
-    async def _submit_block(self, src, coinbase_raw, header, hash_be, job_id):
-        full = src.full_block(coinbase_raw, header)
-        log.warning("%s POTENTIAL BCH BLOCK height=%s job=%s hash=%s — submitting (%d B)",
-                    self._tag(), src.height, job_id, hash_be, len(full) // 2)
+    async def _submit_block(self, src, coinbase_raw, header, hash_be, job_id,
+                            payout, work):
+        """Submit a network-target solution. The block is saved to disk first,
+        tried once inline, and on a transport failure handed to a background
+        retry task, so a node hiccup can never silently discard it. The status
+        only says "rejected" when the node itself answered with a reason."""
+        entry = {"height": src.height, "hash": hash_be, "worker": self.worker,
+                 "payout": payout, "time": time.time(), "status": "submitting"}
+        try:
+            full = src.full_block(coinbase_raw, header)
+        except Exception as e:
+            # Cannot happen with node-supplied template data, but if it ever
+            # does the candidate must still be on record, with its header.
+            entry["status"] = f"block assembly failed: {e}"
+            log.error("%s POTENTIAL BCH BLOCK %s could not be assembled (%s); "
+                      "header=%s coinbase=%s job=%s", self._tag(), hash_be, e,
+                      header.hex(), coinbase_raw.hex(), job_id)
+            self.jobs.record_block(entry)
+            return
+        record = dict(entry, job_id=job_id,
+                      prevhash=src.prevhash_internal[::-1].hex(),
+                      target=f"{src.target:064x}", **work, block_hex=full)
+        saved = save_block_candidate(record)
+        log.warning("%s POTENTIAL BCH BLOCK height=%s job=%s hash=%s prev=%s "
+                    "en1=%s en2=%s ntime=%s nonce=%s version=%s payout=%s — "
+                    "submitting (%d B)", self._tag(), src.height, job_id, hash_be,
+                    record["prevhash"], work["extranonce1"], work["extranonce2"],
+                    work["ntime"], work["nonce"], work["version"],
+                    payout, len(full) // 2)
+        if saved:
+            log.warning("%s block candidate saved to %s", self._tag(), saved)
+        else:
+            # No persistent data dir (or the write failed): the log is the only
+            # copy, so put the full block in it.
+            log.error("%s block candidate NOT saved to disk; block hex: %s",
+                      self._tag(), full)
+        self.jobs.record_block(entry)
+
+        status, err = await self._attempt_submit(full, hash_be)
+        if status:
+            self._finish_block(entry, status)
+            return
+        log.error("%s submitblock failed for %s (%s) — retrying in the background",
+                  self._tag(), hash_be, err)
+        task = asyncio.create_task(self._retry_submit(entry, full, hash_be, err))
+        self.server.submit_tasks.add(task)
+        task.add_done_callback(self.server.submit_tasks.discard)
+
+    async def _attempt_submit(self, full, hash_be):
+        """One submitblock. Returns (final status, None), or (None, error text)
+        when the outcome is unknown and the submit should be retried."""
+        loop = asyncio.get_running_loop()
+        rpc = self.jobs.rpc          # re-read: Settings may have fixed the creds
+        try:
+            result = await loop.run_in_executor(None, rpc.submitblock, full)
+        except Exception as e:
+            return None, str(e)
+        if result in (None, ""):
+            return "accepted", None
+        if result in ("duplicate", "duplicate-inconclusive", "inconclusive"):
+            # The node has the block and found it valid -- a duplicate possibly
+            # from an earlier attempt of ours that timed out after it landed;
+            # "inconclusive" when it is not (yet) on the active chain, e.g. it
+            # lost a race with a competing block. Report where it really is.
+            return (await self._chain_status(hash_be)
+                    or f"inconclusive: node replied {result}"), None
+        return f"rejected: {result}", None
+
+    async def _chain_status(self, hash_be):
+        """Ask the node about a block: "accepted" if it is in the active chain,
+        "inconclusive" if known but not on it, None if unknown/unreachable."""
         loop = asyncio.get_running_loop()
         try:
-            result = await loop.run_in_executor(None, self.jobs.rpc.submitblock, full)
-        except Exception as e:
-            result = f"submit error: {e}"
-        entry = {"height": src.height, "hash": hash_be, "worker": self.worker,
-                 "payout": self.payout_address, "time": time.time()}
-        if result in (None, ""):
-            entry["status"] = "accepted"
+            hdr = await loop.run_in_executor(None, self.jobs.rpc.getblockheader,
+                                             hash_be)
+        except Exception:
+            return None
+        if not isinstance(hdr, dict):
+            return None
+        if (hdr.get("confirmations") or -1) >= 1:
+            return "accepted"
+        return "inconclusive: node has the block but it is not in the active chain"
+
+    async def _retry_submit(self, entry, full, hash_be, err):
+        status = None
+        for delay in SUBMIT_RETRY_DELAYS:
+            await asyncio.sleep(delay)
+            # A submit that timed out may still have landed: check first.
+            status = await self._chain_status(hash_be)
+            if status:
+                break
+            status, e = await self._attempt_submit(full, hash_be)
+            if status:
+                break
+            err = e
+            log.error("%s submitblock retry failed for %s: %s", self._tag(),
+                      hash_be, err)
+        if not status:
+            status = (await self._chain_status(hash_be)
+                      or f"submit failed: {err} — block saved in "
+                         f"{BLOCK_DIR}/, resubmit it with submitblock")
+        self._finish_block(entry, status)
+
+    def _finish_block(self, entry, status):
+        entry["status"] = status
+        self.jobs.update_block()
+        if status == "accepted":
             log.warning("%s 🎉 BCH BLOCK ACCEPTED! height=%s hash=%s payout=%s",
-                        self._tag(), src.height, hash_be, self.payout_address)
+                        self._tag(), entry["height"], entry["hash"], entry["payout"])
         else:
-            entry["status"] = f"rejected: {result}"
-            log.error("%s BLOCK REJECTED height=%s hash=%s reason=%s",
-                      self._tag(), src.height, hash_be, result)
-        self.jobs.record_block(entry)
+            log.error("%s BLOCK NOT ACCEPTED height=%s hash=%s status=%s",
+                      self._tag(), entry["height"], entry["hash"], status)
         # Fire-and-forget: the miner's share ack must not wait on a webhook
         # that can take up to 10 s to time out.
         asyncio.create_task(self.jobs.notify_block(entry))
@@ -684,6 +885,15 @@ async def main():
                "target_spm": cfg["vardiff_target_spm"],
                "min": cfg["vardiff_min"], "max": cfg["vardiff_max"]}
     stats = Stats()
+    # A block still "submitting" was cut off by a restart mid-retry; its
+    # outcome is unknown here, but the candidate is on disk.
+    for b in stats.blocks:
+        if b.get("status") == "submitting":
+            b["status"] = (f"submit interrupted by restart — check the node, or "
+                           f"resubmit the block saved in {BLOCK_DIR}/")
+            log.error("block %s was still submitting at the last shutdown — %s",
+                      b.get("hash"), b["status"])
+            stats.update_block()
     history = History()
     jobs = JobManager(rpc, cfg["share_difficulty"], POLL_INTERVAL,
                       vardiff=vardiff, webhook_url=cfg["webhook_url"], stats=stats,
@@ -745,6 +955,10 @@ async def main():
     stop_event = asyncio.Event()
 
     def _shutdown():
+        if server.submit_tasks:
+            log.error("shutting down with %d block submit(s) still retrying — "
+                      "the candidates are saved in %s/", len(server.submit_tasks),
+                      BLOCK_DIR)
         stats.flush()
         history.flush()
         stop_event.set()

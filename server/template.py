@@ -124,7 +124,8 @@ def _selftest():
     check("target == bits_to_target", t.target == bits_to_target(0x1a44b9f2))
     check("prevhash notify is word-swap of internal",
           word_swap(bytes.fromhex(t.prevhash_notify)) == t.prevhash_internal)
-    check("3 merkle steps for 3 txs", len(t.merkle_branch) == 3)
+    # coinbase + 3 txs = 4 leaves -> a 2-level tree -> 2 branch steps
+    check("2 merkle steps for coinbase + 3 txs", len(t.merkle_branch) == 2)
 
     en1, en2 = "deadbeef", "01020304"
     c1, c2 = t.coinb1_coinb2(_PAYOUT, 4, 4, tag=b"/SoloBCH Forge/")

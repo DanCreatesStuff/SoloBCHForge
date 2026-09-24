@@ -31,6 +31,7 @@ TEMPLATE_REFRESH = 30.0           # re-fetch the template this often on an uncha
 EXTRANONCE1_SIZE = 4              # bytes; server-assigned per connection
 EXTRANONCE2_SIZE = 4             # bytes; advertised in mining.subscribe
 COINBASE_TAG = b"/SoloBCH Forge/"
+COINBASE_MATURITY = 100           # confirmations before a coinbase can be spent
 
 
 def sha256d(b):
@@ -112,7 +113,6 @@ class JobManager:
         self.notify_best_share = notify_best_share
         self.notify_on_miner_offline = notify_miner_offline
         self.share_difficulty = share_difficulty
-        self.share_target = target_from_difficulty(share_difficulty)
         self.poll_interval = poll_interval
         self.vardiff = vardiff or {"enabled": False, "target_spm": 20,
                                    "min": 128, "max": 4000000}
@@ -163,6 +163,13 @@ class JobManager:
     def get_source(self, job_id):
         return self.sources.get(job_id)
 
+    def is_stale(self, src):
+        """True when `src` was built on a chain tip that has since been
+        replaced, i.e. a clean job for a different previous block went out."""
+        cur = self.current_source
+        return (cur is not None and src is not cur
+                and src.prevhash_notify != cur.prevhash_notify)
+
     def register(self, conn):
         self.subscribers.add(conn)
 
@@ -185,6 +192,11 @@ class JobManager:
     def record_block(self, entry):
         if self.stats:
             self.stats.record_block(entry)
+
+    def update_block(self):
+        """Persist a recorded block entry whose status was changed in place."""
+        if self.stats:
+            self.stats.update_block()
 
     async def notify_block(self, entry):
         """Fire the configured webhook (fire-and-forget) when a block is found."""
@@ -302,7 +314,6 @@ class JobManager:
         self.rpc = BitcoinCashRPC(cfg["bchn_rpc_host"], cfg["bchn_rpc_port"],
                                   cfg["bchn_rpc_user"], cfg["bchn_rpc_password"])
         self.share_difficulty = cfg["share_difficulty"]
-        self.share_target = target_from_difficulty(cfg["share_difficulty"])
         self.vardiff = {"enabled": cfg["vardiff_enabled"],
                         "target_spm": cfg["vardiff_target_spm"],
                         "min": cfg["vardiff_min"], "max": cfg["vardiff_max"]}
@@ -443,6 +454,11 @@ class JobManager:
                     # Mock mode retries getblocktemplate on every poll regardless
                     # of the tip, so recording it here cannot suppress a retry.
                     self._last_tip = tip
+            if tip_changed:
+                try:
+                    await self._track_blocks(loop)
+                except Exception as e:
+                    log.warning("block tracking failed: %s", e)
             return
 
         # IBD -> mock, tip-driven with throttle
@@ -459,6 +475,48 @@ class JobManager:
                      tag, tip[:16], info.get("blocks"), pct, self.current_job_id,
                      len(self.subscribers))
             await self._broadcast()
+
+    # --- found-block tracking --------------------------------------------- #
+    async def _track_blocks(self, loop):
+        """Follow found blocks after submission, on each new tip: confirmations,
+        orphaning (a competing chain won, so the reward will not be paid), and
+        coinbase maturity. A block whose submit outcome was unknown is picked up
+        here too if the node turns out to have it. Mature blocks are final."""
+        changed = False
+        for b in self.blocks_found:
+            status = str(b.get("status") or "")
+            if (b.get("mature") or not b.get("hash") or status == "submitting"
+                    or status.startswith(("rejected", "block assembly"))):
+                continue
+            try:
+                hdr = await loop.run_in_executor(None, self.rpc.getblockheader,
+                                                 b["hash"])
+            except RPCError as e:
+                if e.code == -5:              # unknown to the node: nothing to track
+                    continue
+                raise
+            conf = hdr.get("confirmations") if isinstance(hdr, dict) else None
+            if not isinstance(conf, int):
+                continue
+            if conf >= 1:
+                new = "accepted"
+            elif status in ("accepted", "orphaned"):
+                new = "orphaned"
+            else:
+                new = status                  # known, never on the active chain
+            b["confirmations"] = max(conf, 0)
+            if new == "accepted" and conf >= COINBASE_MATURITY:
+                b["mature"] = True
+                log.warning("block %s at height %s is mature (%d confirmations) — "
+                            "reward spendable", b["hash"], b.get("height"), conf)
+            changed = True
+            if new != status:
+                b["status"] = new
+                log.warning("block %s at height %s: %s -> %s", b["hash"],
+                            b.get("height"), status, new)
+                asyncio.create_task(self.notify_block(b))
+        if changed:
+            self.update_block()
 
     # --- status ---------------------------------------------------------- #
     def status_snapshot(self):

@@ -24,6 +24,8 @@ import os
 import urllib.error
 import urllib.request
 
+SUBMIT_TIMEOUT = 120.0
+
 
 class RPCError(Exception):
     """A JSON-RPC level error returned by bitcoind (has .code and .message)."""
@@ -49,7 +51,7 @@ class BitcoinCashRPC:
     def __repr__(self):  # never leak the password
         return f"<BitcoinCashRPC {self.user}@{self.host}:{self.port}>"
 
-    def call(self, method: str, params=None):
+    def call(self, method: str, params=None, timeout=None):
         self._id += 1
         payload = json.dumps({
             "jsonrpc": "1.0", "id": f"solobch-{self._id}",
@@ -61,7 +63,7 @@ class BitcoinCashRPC:
                      "Authorization": self._auth_header},
         )
         try:
-            with urllib.request.urlopen(req, timeout=self._timeout) as resp:
+            with urllib.request.urlopen(req, timeout=timeout or self._timeout) as resp:
                 body = json.load(resp)
         except urllib.error.HTTPError as e:
             # bitcoind returns HTTP 500 for RPC errors, with a JSON error body.
@@ -106,7 +108,15 @@ class BitcoinCashRPC:
         return self.call("getblocktemplate", [template_request or {}])
 
     def submitblock(self, block_hex: str):
-        return self.call("submitblock", [block_hex])
+        # The node fully validates the block before answering; give a large
+        # block on a Pi more room than the default so a slow-but-successful
+        # submit is not mistaken for a failure.
+        return self.call("submitblock", [block_hex], timeout=SUBMIT_TIMEOUT)
+
+    def getblockheader(self, block_hash: str):
+        """Header info for a block the node knows (confirmations is -1 when it
+        is not in the active chain). RPCError code -5 when it is unknown."""
+        return self.call("getblockheader", [block_hash, True])
 
 
 def from_env() -> "BitcoinCashRPC":

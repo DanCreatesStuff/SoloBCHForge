@@ -454,7 +454,8 @@ async function tick(){
     +'<th>Status</th><th>Conf</th><th>Payout</th><th>When</th></tr></thead><tbody>'
     +bl.map(b=>{
       const acc=String(b.status).startsWith('accepted');
-      const conf=(acc&&n.blocks!=null&&b.height!=null)?Math.max(0,n.blocks-b.height+1):null;
+      const conf=!acc?null:(b.confirmations!=null?b.confirmations:((n.blocks!=null&&b.height!=null)?Math.max(0,n.blocks-b.height+1):null));
+      const ctxt=conf==null?'—':(b.mature?conf+' · spendable':conf+' / 100');
       const hash=b.hash||'';
       const hcell=hash?'<a class="lnk" href="https://blockchair.com/bitcoin-cash/block/'+encodeURIComponent(hash)+'" target="_blank" rel="noopener">'+esc(hash.slice(0,20))+'…</a>':'—';
       return '<tr>'+
@@ -462,7 +463,7 @@ async function tick(){
        '<td data-label="Height">'+esc(b.height)+'</td>'+
        '<td data-label="Hash" class="dim">'+hcell+'</td>'+
        '<td data-label="Status" class="'+(acc?'ok':'bad')+'">'+esc(b.status)+'</td>'+
-       '<td data-label="Conf" class="dim">'+(conf!=null?conf:'—')+'</td>'+
+       '<td data-label="Conf" class="dim">'+esc(ctxt)+'</td>'+
        '<td data-label="Payout" class="dim">'+copyAddr(b.payout)+'</td>'+
        '<td data-label="When" class="dim">'+ago((Date.now()/1000)-b.time)+' ago</td>'+
        '</tr>';}).join('')

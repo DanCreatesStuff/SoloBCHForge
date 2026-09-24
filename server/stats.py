@@ -171,6 +171,12 @@ class Stats:
         self._dirty = True
         self._save(force=True)
 
+    def update_block(self):
+        """A recorded block entry was changed in place (its submit status
+        resolved). Flushed immediately, like record_block."""
+        self._dirty = True
+        self._save(force=True)
+
     def blocks_for_worker(self, worker):
         return sum(1 for b in self.blocks if b.get("worker") == worker)
 

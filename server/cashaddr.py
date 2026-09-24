@@ -18,7 +18,9 @@ _CHARMAP = {c: i for i, c in enumerate(CHARSET)}
 # version-byte low 3 bits -> hash length in bytes
 _SIZE = {0: 20, 1: 24, 2: 28, 3: 32, 4: 40, 5: 48, 6: 56, 7: 64}
 _SIZE_INV = {v: k for k, v in _SIZE.items()}
-_KIND = {0: "p2pkh", 1: "p2sh"}
+# Types 2/3 are the CashTokens "token-aware" forms (bitcoincash:z.../r...): the
+# same P2PKH/P2SH locking script, only flagged as able to receive tokens.
+_KIND = {0: "p2pkh", 1: "p2sh", 2: "p2pkh-tokens", 3: "p2sh-tokens"}
 _KIND_INV = {v: k for k, v in _KIND.items()}
 
 
@@ -78,6 +80,8 @@ def decode(address, default_prefix="bitcoincash"):
     if not isinstance(address, str):
         raise CashAddrError("address must be a string")
     address = address.strip()
+    if address != address.lower() and address != address.upper():
+        raise CashAddrError("mixed-case address")
     if ":" in address:
         prefix, payload = address.split(":", 1)
     else:
@@ -126,11 +130,15 @@ def to_script(address):
     """Return the coinbase output scriptPubKey (bytes) for a BCH address."""
     d = decode(address)
     h = d["hash"]
-    if len(h) != 20:
-        raise CashAddrError("only 160-bit P2PKH/P2SH supported for coinbase output")
-    if d["type"] == "p2pkh":
+    if d["type"].startswith("p2pkh"):
+        if len(h) != 20:
+            raise CashAddrError("P2PKH address must carry a 160-bit hash")
         return b"\x76\xa9\x14" + h + b"\x88\xac"          # OP_DUP OP_HASH160 <20> OP_EQUALVERIFY OP_CHECKSIG
-    return b"\xa9\x14" + h + b"\x87"                       # OP_HASH160 <20> OP_EQUAL
+    if len(h) == 20:
+        return b"\xa9\x14" + h + b"\x87"                   # OP_HASH160 <20> OP_EQUAL
+    if len(h) == 32:
+        return b"\xaa\x20" + h + b"\x87"                   # P2SH32: OP_HASH256 <32> OP_EQUAL
+    raise CashAddrError("P2SH address must carry a 160- or 256-bit hash")
 
 
 def is_valid_bch_address(address):
@@ -181,8 +189,34 @@ def _selftest():
             print(f"FAIL  {addr}  -> {e}")
             fail += 1
 
+    # CashTokens spec pair: the token-aware (z) form pays the same script as q.
+    plain = "bitcoincash:qr6m7j9njldwwzlg9v7v53unlr4jkmx6eylep8ekg2"
+    token = "bitcoincash:zr6m7j9njldwwzlg9v7v53unlr4jkmx6eycnjehshe"
+    try:
+        same = (decode(token)["type"] == "p2pkh-tokens"
+                and to_script(token) == to_script(plain))
+    except CashAddrError as e:
+        same = False
+        print(f"      {e}")
+    print(f"{'PASS' if same else 'FAIL'}  token-aware z-address -> same P2PKH script")
+    ok, fail = ok + same, fail + (not same)
+
+    # P2SH32 round-trip: 32-byte P2SH -> OP_HASH256 <32> OP_EQUAL
+    h32 = bytes(range(32))
+    a32 = encode("bitcoincash", "p2sh", h32)
+    good = to_script(a32) == b"\xaa\x20" + h32 + b"\x87"
+    print(f"{'PASS' if good else 'FAIL'}  P2SH32 {a32[:24]}... -> aa20..87")
+    ok, fail = ok + good, fail + (not good)
+
+    # Upper-case is legal; mixed case is not (spec).
+    upper_ok = is_valid_bch_address(_VECTORS[0][0].upper())
+    print(f"{'PASS' if upper_ok else 'FAIL'}  all-upper-case address accepted")
+    ok, fail = ok + upper_ok, fail + (not upper_ok)
+
     # Negative cases
     negatives = [
+        ("mixed-case address must be rejected",
+         "bitcoincash:Qpm2qsznhks23z7629mms6s4cwef74vcwvy22gdx6a"),
         ("Bitcoin bech32 (bc1) must be rejected",
          "bc1q5z24l8kuz3ht4zytk9la2mxj7tlhgavw6j9k00"),
         ("corrupted checksum must be rejected",
