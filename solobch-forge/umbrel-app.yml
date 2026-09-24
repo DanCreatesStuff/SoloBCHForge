@@ -2,7 +2,7 @@ manifestVersion: 1
 id: solobch-forge
 category: bitcoin
 name: SoloBCH Forge
-version: "1.1.2"
+version: "1.1.3"
 tagline: Solo mine Bitcoin Cash to your own BCHN node
 icon: https://cdn.jsdelivr.net/gh/DanCreatesStuff/SoloBCHForge@main/solobch-forge/icon.svg
 description: >-
@@ -35,12 +35,14 @@ gallery:
 path: ""
 defaultPassword: ""
 releaseNotes: >-
-  New "Is this working?" button at the top of Settings: runs a step-by-step
-  check of your whole setup (settings, node, block building, Stratum port, your
-  miner and its shares), stops at the first problem and shows a potential fix.
-  Includes the 1.1.1 reliability and security fixes: recovery from slow node
-  responses, 30-second template refreshes so new fees are included, a working
-  ZMQ instant-job feed on Umbrel, hardened dashboard and settings API, bounded
-  memory over long sessions, and prompt restarts.
+  Block-safety release. A found block is now saved to the app's data folder
+  before it is sent to your node, retried automatically if the node is briefly
+  unreachable, and double-checked with the node, so a hiccup can no longer lose
+  it (and it can be resubmitted by hand from the saved file). Found blocks are
+  now tracked after submission: confirmations, orphaned blocks, and when the
+  reward becomes spendable after 100 confirmations. Share handling is more
+  accurate: shares found just before a difficulty change are no longer rejected,
+  and shares on an outdated block are reported as stale. Also adds support for
+  token-aware (z...) and P2SH32 payout addresses.
 submitter: DanCreatesStuff
 submission: https://github.com/DanCreatesStuff/SoloBCHForge
