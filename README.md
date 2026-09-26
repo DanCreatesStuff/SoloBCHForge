@@ -19,6 +19,10 @@ reward goes straight to your address.
 ASIC miner (Stratum V1)  →  SoloBCH Forge  →  Bitcoin Cash Node (JSON-RPC)  →  BCH network
 ```
 
+**See it running:** [solobch-stats.tail972f00.ts.net](https://solobch-stats.tail972f00.ts.net) —
+live public stats from the author's own rig (two NerdQaxe++ miners on a Raspberry Pi 5
+Umbrel) solo mining BCH through SoloBCH Forge: hashrate history, best share, and the odds.
+
 ## Features
 
 **True solo mining**
